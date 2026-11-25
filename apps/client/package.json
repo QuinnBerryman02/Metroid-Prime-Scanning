@@ -16,6 +16,7 @@
     "@metroid-scan/shared": "*"
   },
   "devDependencies": {
+    "@types/webxr": "^0.5.20",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
   }

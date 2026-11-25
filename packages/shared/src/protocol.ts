@@ -142,6 +142,8 @@ export const CLASS_COLORS: Record<string, string> = {
   default: "#7cf7c4",
 };
 
+const DEFAULT_COLOR = CLASS_COLORS.default ?? "#7cf7c4";
+
 export function colorForLabel(label: string): string {
-  return CLASS_COLORS[label] ?? CLASS_COLORS.default;
+  return CLASS_COLORS[label] ?? DEFAULT_COLOR;
 }

@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 
 // WebXR + camera need a secure context. For phone testing, either:
@@ -18,5 +19,15 @@ export default defineConfig({
     port: 5173,
     https: httpsConfig(),
   },
-  build: { target: "es2022" },
+  build: {
+    target: "es2022",
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        capabilities: fileURLToPath(
+          new URL("./capabilities.html", import.meta.url),
+        ),
+      },
+    },
+  },
 });

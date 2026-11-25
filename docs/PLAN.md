@@ -8,6 +8,19 @@ early with placeholder ML (hardcoded detections) before touching real models.
 
 Suggested overall effort for a course-sized scope: ~4-6 focused weeks.
 
+## Priorities & scope decisions
+
+1. **Mobile AR scan HUD is the priority.** It carries the most marks (interaction +
+   innovation) and is the most distinctive part of the demo.
+2. **3D viewer can be coarse.** Room walls + scanned objects as boxes is enough; a full
+   NeRF/3DGS house scan is *nice-to-have, not essential*. Do not sink time into it before
+   the HUD works.
+3. **Occlusion of AR overlays is out of scope.** Overlays draw on top (2D overlay canvas);
+   no depth-based occlusion needed.
+4. **Depth source is TBD** - depends on whether the target phone exposes WebXR
+   `depth-sensing`. Use `apps/client/capabilities.html` to find out (see M1). If it does,
+   we can skip the monocular depth model for lifting on that device.
+
 ---
 
 ## Milestone 0 - Repo & tooling (0.5 week)
@@ -25,6 +38,10 @@ inference `/health` responds.
 
 ## Milestone 1 - WebXR skeleton on the phone (1 week)
 
+- [x] **Capability/depth diagnostic page** (`apps/client/capabilities.html`): reports
+      secure context, WebXR support, enabled AR features (`session.enabledFeatures`),
+      live hit-test reticle and depth-map preview. **Run this on the phone first** - the
+      result decides whether we need monocular depth at all.
 - [ ] Babylon `WebXR` default experience: `immersive-ar`, `local-floor`, DOM overlay.
 - [ ] Camera passthrough + `<video>`/raw-camera fallback; confirm it works over LAN HTTPS.
 - [ ] Hit-test / sphere at tapped feature points; draw debug spheres.
@@ -149,10 +166,10 @@ highlighted and selectable, updating live as the phone scans.
 
 ## Open questions
 
-- Is WebXR Depth Sensing available on the target phone? Determines whether we need the
-  monocular depth model at all for lifting.
+- Is WebXR Depth Sensing available on the target phone? (Check `/capabilities.html`.)
+  If yes -> use it for lifting and skip monocular depth on-device. If no -> Depth Anything
+  V2 small on the server.
 - Do we want 3D outlines rendered in-scene (correct occlusion) or 2D overlay (simpler)?
-  Plan: 2D first, upgrade if time.
-- How much reconstruction fidelity is actually needed to score on the rubric's
-  "detailed 3D scene / custom models"? If not much, invest in the scan-visor HUD and
-  model pipeline instead (more distinctive + more marks via interaction/innovation).
+  **Decided: 2D overlay first, occlusion out of scope.**
+- How much reconstruction fidelity is needed? **Decided: coarse boxes/planes are fine;**
+  prioritise the scan-visor HUD and the segmentation/classification pipeline.
