@@ -1,10 +1,11 @@
 """
 Metroid-scan inference service.
 
-`/scan` takes a keyframe and returns:
-  * every YOLO detection (boxes + labels), and
-  * Stage-B geometry for the aimed object: its mask, a camera-space contour and
-    an oriented bounding box, ready for the phone to anchor - `docs/LIFTING.md`.
+`/scan` takes a keyframe and returns, depending on `mode`:
+  * "scan"  - every YOLO detection (boxes + labels) plus Stage-B geometry for
+              the aimed object: its mask, a camera-space contour and an oriented
+              bounding box, ready for the phone to anchor (`docs/LIFTING.md`).
+  * "depth" - a colourised depth map for the frame.
 
 The server stays pose-agnostic: it works in camera space, the phone owns pose
 and the AR anchor API.
@@ -23,6 +24,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
+import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from PIL import Image
@@ -31,6 +33,7 @@ from .config import (
     CONF,
     DEPTH_DEVICE,
     DEPTH_ENABLED,
+    DEPTH_IR,
     DEPTH_MODEL,
     DEVICE,
     EXPORT_OPENVINO,
@@ -40,6 +43,8 @@ from .config import (
     SAM_DEVICE,
     SAM_MODEL,
     SEGMENT_ENABLED,
+    SEGMENTER,
+    YOLO_SEG_MODEL,
 )
 from .depth import DepthEstimator
 from .detector import Detector
@@ -50,7 +55,7 @@ from .lifting import (
     make_obb,
     unproject_mask,
 )
-from .schemas import Aimed, Detection, Mask, Obb, ScanRequest, ScanResponse
+from .schemas import Aimed, DepthResult, Detection, Mask, Obb, ScanRequest, ScanResponse
 from .segment import Segmenter
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -60,32 +65,63 @@ state: dict[str, Any] = {}
 
 
 def _try_load(name: str, factory: Any) -> Any:
-    """Load an optional Stage-B model; never let it stop the service."""
+    """Load an optional model; never let it stop the service."""
     try:
         return factory()
     except Exception as e:  # noqa: BLE001
-        log.warning("Stage B '%s' unavailable (%s) - serving boxes only", name, e)
+        log.warning("'%s' unavailable (%s)", name, e)
         return None
+
+
+def _get_segmenter(backend: str) -> Segmenter | None:
+    """Lazily build and cache a segmenter for the chosen backend."""
+    if not SEGMENT_ENABLED:
+        return None
+    cache: dict[str, Segmenter | None] = state.setdefault("segmenters", {})
+    if backend in cache:
+        return cache[backend]
+    device = DEVICE if backend == "yolo11" else SAM_DEVICE
+    segmenter = _try_load(
+        f"segmenter:{backend}",
+        lambda: Segmenter(
+            backend=backend,
+            sam_model=SAM_MODEL,
+            yolo_model=YOLO_SEG_MODEL,
+            device=device,
+            export=EXPORT_OPENVINO and device != "cpu",
+            imgsz=IMGSZ,
+            conf=CONF,
+        ),
+    )
+    if segmenter is not None:
+        try:
+            segmenter.warmup()
+        except Exception as e:  # noqa: BLE001
+            log.warning("segmenter warmup failed: %s", e)
+    cache[backend] = segmenter
+    return segmenter
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     state["detector"] = Detector(MODEL_PATH, DEVICE, IMGSZ, CONF, EXPORT_OPENVINO)
-    # Stage B models are optional: detection still works if they fail to load.
-    state["segmenter"] = _try_load(
-        "segmenter",
-        lambda: Segmenter(SAM_MODEL, SAM_DEVICE) if SEGMENT_ENABLED else None,
+    state["segmenters"] = {}
+    state["depth"] = (
+        _try_load(
+            "depth",
+            lambda: DepthEstimator(DEPTH_MODEL, DEPTH_DEVICE, DEPTH_IR, EXPORT_OPENVINO),
+        )
+        if DEPTH_ENABLED
+        else None
     )
-    state["depth"] = _try_load(
-        "depth",
-        lambda: DepthEstimator(DEPTH_MODEL, DEPTH_DEVICE) if DEPTH_ENABLED else None,
-    )
-    log.info("ready (device=%s)", DEVICE)
+    if SEGMENT_ENABLED:  # preload the default backend so the first scan is warm
+        _get_segmenter(SEGMENTER)
+    log.info("ready (device=%s, segmenter=%s)", DEVICE, SEGMENTER)
     yield
     state.clear()
 
 
-app = FastAPI(title="metroid-scan inference", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="metroid-scan inference", version="0.2.0", lifespan=lifespan)
 
 
 def pick_aimed(
@@ -108,14 +144,41 @@ def pick_aimed(
     return best
 
 
+def _colorize_depth(depth: np.ndarray) -> np.ndarray:
+    lo, hi = float(depth.min()), float(depth.max())
+    norm = (depth - lo) / (hi - lo + 1e-6)
+    gray = (norm * 255).astype(np.uint8)
+    colour = cv2.applyColorMap(gray, cv2.COLORMAP_TURBO)
+    return cv2.cvtColor(colour, cv2.COLOR_BGR2RGB)
+
+
+def _downscale(rgb: np.ndarray, max_edge: int = 512) -> np.ndarray:
+    h, w = rgb.shape[:2]
+    scale = min(1.0, max_edge / max(h, w))
+    if scale >= 1.0:
+        return rgb
+    size = (max(1, int(w * scale)), max(1, int(h * scale)))
+    return cv2.resize(rgb, size, interpolation=cv2.INTER_AREA)
+
+
+def _encode_png(rgb: np.ndarray) -> str:
+    buf = io.BytesIO()
+    Image.fromarray(rgb).save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
+    segmenters = state.get("segmenters", {})
     return {
         "ok": True,
         "device": DEVICE,
         "model": MODEL_PATH,
         "loaded": "detector" in state,
         "classes": len(getattr(state.get("detector"), "names", {}) or {}),
+        "segmenter": SEGMENTER,
+        "loadedSegmenters": [k for k, v in segmenters.items() if v],
+        "depth": state.get("depth") is not None,
     }
 
 
@@ -137,31 +200,53 @@ async def scan(req: ScanRequest) -> ScanResponse:
         raise HTTPException(status_code=400, detail=f"bad image: {e}") from e
     img = np.array(pil)
     height, width = img.shape[:2]
-    frame_id = req.frameId
-    aim_x, aim_y = req.aimX, req.aimY
+    frame_id = req.frameId or uuid.uuid4().hex
+    timing: dict[str, float] = {}
+
+    if req.mode == "depth":
+        depth = state.get("depth")
+        if depth is None:
+            raise HTTPException(status_code=503, detail="depth model not loaded")
+        t0 = time.perf_counter()
+        depth_map = depth.predict(pil)
+        timing["depth"] = round((time.perf_counter() - t0) * 1000, 2)
+        log.info("depth %s: %.0f ms", frame_id, timing["depth"])
+        return ScanResponse(
+            frameId=frame_id,
+            width=width,
+            height=height,
+            detections=[],
+            depth=DepthResult(
+                png=_encode_png(_downscale(_colorize_depth(depth_map))),
+                width=width,
+                height=height,
+                min=float(depth_map.min()),
+                max=float(depth_map.max()),
+            ),
+            timing=timing,
+        )
 
     t0 = time.perf_counter()
     detections = detector.detect(img)
-    detect_ms = (time.perf_counter() - t0) * 1000
+    timing["detect"] = round((time.perf_counter() - t0) * 1000, 2)
 
     aimed = None
-    idx = pick_aimed(detections, aim_x, aim_y, width, height)
-    timing: dict[str, float] = {"detect": round(detect_ms, 2)}
+    idx = pick_aimed(detections, req.aimX, req.aimY, width, height)
     if idx is not None:
         d = detections[idx]
         aimed = Aimed(detectionIndex=idx, classId=d.classId, name=d.label)
         _lift_aimed(aimed, d, pil, img, req, (width, height), timing)
 
     log.info(
-        "scan %s: %d detections (aimed=%s) in %.0f ms %s",
-        frame_id or "(no id)",
+        "scan %s: %d detections (aimed=%s) in %s ms %s",
+        frame_id,
         len(detections),
         aimed.name if aimed else "-",
-        detect_ms,
+        timing.get("detect", 0),
         f"(+{aimed.pointCount} pts)" if aimed and aimed.pointCount else "",
     )
     return ScanResponse(
-        frameId=frame_id or uuid.uuid4().hex,
+        frameId=frame_id,
         width=width,
         height=height,
         detections=detections,
@@ -180,7 +265,7 @@ def _lift_aimed(
     timing: dict[str, float],
 ) -> None:
     """Stage B: segment the aimed box, estimate depth, unproject to camera space."""
-    segmenter: Segmenter | None = state.get("segmenter")
+    segmenter = _get_segmenter(req.segmenter or SEGMENTER)
     depth_est: DepthEstimator | None = state.get("depth")
     if segmenter is None or depth_est is None:
         return

@@ -73,7 +73,10 @@ Stage B (done):
 - [x] Segment the aimed object (SAM 2.1 tiny, box-prompted) -> `mask` + `contour2d`.
 - [x] Depth (Depth Anything V2 Small) -> unproject the mask to camera space;
       reduce to `contourCam` + `obbCam` (PCA + robust extents). See `docs/LIFTING.md`.
-- [ ] Speed: export SAM/depth to OpenVINO (currently ~3.7 s/scan on CPU).
+- [x] Speed: Depth Anything V2 exported to OpenVINO (iGPU, ~150 ms). SAM 2.1
+      cannot be exported, so added a **YOLO11n-seg (OpenVINO)** backend (~40 ms);
+      selectable per request (`segmenter: sam2 | yolo11`).
+- [x] `mode: "depth"` on `/scan` returns a colourised depth map.
 - [ ] Optional: CLIP zero-shot classifier on crops; Florence-2 caption (async).
 
 **Stage A done when:** a photo gives labels back in < ~150 ms. (achieved, ~20 ms)

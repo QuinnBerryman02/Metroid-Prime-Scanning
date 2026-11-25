@@ -2,12 +2,15 @@
 Smoke-test `/scan` in-process (no server needed).
 
     .venv/Scripts/python.exe scripts/test_scan.py
+
+Exercises both segmenters ("sam2" quality / "yolo11" fast) and the depth mode.
 """
 from __future__ import annotations
 
 import base64
 import io
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -30,51 +33,53 @@ def ensure_image() -> Path:
     return path
 
 
-def main() -> int:
+def encode() -> str:
     buf = io.BytesIO()
     Image.open(ensure_image()).convert("RGB").save(buf, format="JPEG", quality=90)
-    payload = base64.b64encode(buf.getvalue()).decode()
-    body = {"image": payload, "frameId": "test", "aimX": 0.5, "aimY": 0.5}
+    return base64.b64encode(buf.getvalue()).decode()
 
+
+def fmt(timing: dict) -> str:
+    return " ".join(f"{k}={v:.0f}" for k, v in timing.items())
+
+
+def run_scan(client: TestClient, image: str, **extra):
+    body = {"image": image, "frameId": "test", "aimX": 0.5, "aimY": 0.5, **extra}
+    t0 = time.perf_counter()
+    response = client.post("/scan", json=body)
+    response.raise_for_status()
+    return response.json(), (time.perf_counter() - t0) * 1000
+
+
+def main() -> int:
+    image = encode()
     with TestClient(app) as client:
         health = client.get("/health").json()
         print("health:", health)
         if not health.get("ok"):
             return 1
 
-        data = {}
-        for i in range(3):
-            response = client.post("/scan", json=body)
-            response.raise_for_status()
-            data = response.json()
-            t = data["timing"]
-            parts = " ".join(f"{k}={v:.0f}" for k, v in t.items())
-            print(f"  scan {i + 1}: {parts} ms")
+        for seg in ("sam2", "yolo11"):
+            data, rtt = run_scan(client, image, segmenter=seg)
+            aimed = data["aimed"]
+            print(f"[scan/{seg:<6}] rtt={rtt:6.0f} ms | {fmt(data['timing'])}")
+            print(f"              detections={len(data['detections'])}")
+            if aimed:
+                obb = aimed["obbCam"]
+                size = "x".join(f"{v:.2f}" for v in obb["size"]) if obb else "-"
+                print(
+                    f"              aimed={aimed['name']} points={aimed['pointCount']} "
+                    f"contour={len(aimed.get('contour2d') or [])}pts obb={size}"
+                )
 
-    print(f"image {data['width']}x{data['height']}  timing {data['timing']}")
-    for d in data["detections"]:
-        box = ", ".join(f"{v:.0f}" for v in d["box"])
-        flag = " mask" if d.get("mask") else ""
-        print(f"  {d['label']:<12} {d['score']:.2f}  [{box}]{flag}")
-
-    aimed = data["aimed"]
-    if aimed:
-        obb = aimed.get("obbCam")
-        obb_str = "-"
-        if obb:
-            size = "x".join(f"{v:.2f}" for v in obb["size"])
-            centre = ",".join(f"{v:.2f}" for v in obb["center"])
-            obb_str = f"size {size} @ ({centre})"
-        depth = aimed.get("depthAtCentre")
-        depth_str = f"{depth:.3f}" if depth is not None else "-"
+        data, rtt = run_scan(client, image, mode="depth")
+        result = data["depth"]
         print(
-            f"aimed: {aimed['name']}  points={aimed.get('pointCount')} "
-            f"contour={len(aimed.get('contour2d') or [])}pts "
-            f"depthAtCentre={depth_str} "
-            f"scale={aimed.get('scaleHint')}"
+            f"[depth      ] rtt={rtt:6.0f} ms | {fmt(data['timing'])} | "
+            f"png={len(result['png'])}B range=({result['min']:.2f},{result['max']:.2f})"
         )
-        print(f"       obbCam {obb_str}")
-    return 0 if data["detections"] else 1
+
+    return 0 if health.get("ok") else 1
 
 
 if __name__ == "__main__":

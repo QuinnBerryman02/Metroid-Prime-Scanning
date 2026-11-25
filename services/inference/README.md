@@ -7,9 +7,25 @@ feeds into the 3D overlay, and `docs/MODELS.md` for model choices.
 
 - **Stage A** - `POST /scan` returns YOLO detections (boxes + labels) for a
   keyframe, plus which detection is under the reticle (`aimed`). ✅
-- **Stage B** - the aimed object is segmented (SAM 2.1), given depth (Depth
-  Anything V2) and lifted into camera-space geometry: `contour2d`, `contourCam`,
-  `obbCam`, `depthAtCentre`. ✅ (see `docs/LIFTING.md`)
+- **Stage B** - the aimed object is segmented, given depth (Depth Anything V2)
+  and lifted into camera-space geometry: `contour2d`, `contourCam`, `obbCam`,
+  `depthAtCentre`. ✅ (see `docs/LIFTING.md`)
+
+`POST /scan` takes a `mode`:
+
+- `"scan"` (default) - detection + segmentation + lifting.
+- `"depth"` - just the depth map (colourised PNG) for the frame.
+
+Two segmentation backends (`segmenter`, request-overridable):
+
+| backend | model | device | latency | notes |
+|---|---|---|---|---|
+| `sam2` (default) | SAM 2.1 tiny | CPU | ~2.0 s | best masks |
+| `yolo11` | YOLO11n-seg | OpenVINO iGPU | ~40 ms | class-aware, good enough |
+
+> SAM 2.1 can't be exported to OpenVINO (Ultralytics' exporter doesn't support
+> SAM/SAM2, and optimum-intel rejects `sam2_video`), so the fast path uses
+> YOLO11-seg instead.
 
 ## Setup
 
@@ -41,37 +57,57 @@ Environment:
 | `EXPORT_OPENVINO` | `1` | auto-export the `.pt` to OpenVINO |
 | `IMGSZ` | `640` | inference resolution |
 | `CONF` | `0.25` | detection confidence threshold |
-| `SEGMENT` | `1` | enable Stage-B segmentation (SAM) |
+| `SEGMENT` | `1` | enable Stage-B segmentation |
 | `DEPTH` | `1` | enable Stage-B depth (Depth Anything V2) |
+| `SEGMENTER` | `sam2` | default backend: `sam2` \| `yolo11` |
 | `SAM_MODEL` | `./notebooks/sam2.1_t.pt` | SAM weights (local path or Ultralytics name) |
+| `SAM_DEVICE` | `cpu` | device for SAM (PyTorch) |
+| `YOLO_SEG_MODEL` | `./yolo11n-seg.pt` | YOLO11-seg weights (OpenVINO-exported) |
 | `DEPTH_MODEL` | `depth-anything/Depth-Anything-V2-Small-hf` | HF depth model |
+| `DEPTH_DEVICE` | `GPU` | OpenVINO device for the depth IR |
+| `DEPTH_IR` | `./depth_anything_v2_small_openvino_model/…xml` | where the exported IR lives |
 | `FOV_DEG` | `60` | default horizontal FOV for intrinsics |
 
 Stage B models are optional: if they fail to load the service still serves
-boxes (it logs a warning). Segment/depth run on CPU by default; set
-`SAM_DEVICE` / `DEPTH_DEVICE` to move them.
+boxes (it logs a warning).
+
+The depth model is **exported to OpenVINO on first run** (one-off, ~30 s) and
+runs on the iGPU. The `yolo11` segmenter also exports/compiles to OpenVINO on
+first use and is warmed up, so the first request isn't the slow one.
 
 ### Latency (Intel Core Ultra 7 165U)
 
-Per `/scan` on a keyframe: detect ~22 ms (iGPU), segment ~2.5 s (SAM 2.1 tiny,
-CPU), depth ~1.2 s (Depth Anything V2 Small, CPU). Segmentation is only run for
-the aimed object. Exporting SAM/depth to OpenVINO is the next speed-up.
+Per keyframe, warm (`mode="scan"`):
+
+| stage | `sam2` (quality) | `yolo11` (fast) |
+|---|---|---|
+| detect (iGPU) | ~20 ms | ~20 ms |
+| segment | ~2000 ms (CPU) | ~40 ms (iGPU) |
+| depth (iGPU) | ~150 ms | ~150 ms |
+| **total** | **~2.2 s** | **~0.2 s** |
+
+`mode="depth"` is ~150 ms. Depth on CPU (PyTorch fallback) is ~1.2 s.
 
 ## Endpoints
 
 ### `GET /health`
 ```json
-{ "ok": true, "device": "xpu", "model": "…/yolo11n.pt", "loaded": true, "classes": 80 }
+{ "ok": true, "device": "xpu", "model": "…/yolo11n.pt", "loaded": true,
+  "classes": 80, "segmenter": "sam2", "loadedSegmenters": ["sam2"], "depth": true }
 ```
 
 ### `POST /scan`
 JSON body (`image` is base64, no data-URI prefix):
 
 ```json
-{ "image": "/9j/4AAQ…", "frameId": "abc", "aimX": 0.5, "aimY": 0.5 }
+{ "image": "/9j/4AAQ…", "frameId": "abc", "aimX": 0.5, "aimY": 0.5,
+  "mode": "scan", "segmenter": "yolo11", "fovDeg": 60 }
 ```
 
-Response (Stage A):
+`mode` is `"scan"` (default) or `"depth"`. `segmenter` overrides the server
+default for this request.
+
+Response (`mode="scan"`):
 
 ```jsonc
 {
@@ -88,7 +124,19 @@ Response (Stage A):
     "obbCam": { "center": [x, y, z], "size": [w, h, d], "quat": [x, y, z, w] },
     "depthAtCentre": 3.02, "scaleHint": "hit-test", "pointCount": 16273
   },
-  "timing": { "detect": 22, "segment": 2533, "depth": 1155 }
+  "timing": { "detect": 22, "segment": 2000, "depth": 150 }
+}
+```
+
+Response (`mode="depth"`) - `detections` is empty and `depth` is set:
+
+```jsonc
+{
+  "frameId": "abc", "width": 640, "height": 360,
+  "detections": [], "aimed": null,
+  "depth": { "png": "iVBORw0…", "width": 640, "height": 360,
+             "min": 0.30, "max": 7.74 },
+  "timing": { "depth": 150 }
 }
 ```
 
@@ -99,8 +147,5 @@ recovers metric scale from an AR hit-test (see `docs/LIFTING.md`).
 ## Test
 
 ```bash
-.venv/Scripts/python.exe scripts/test_scan.py      # in-process, 3 scans
+.venv/Scripts/python.exe scripts/test_scan.py   # both segmenters + depth mode
 ```
-
-Measured on this machine (Intel Core Ultra 7 165U): steady-state ~20 ms/scan on
-the iGPU (`xpu`); the first call after startup is warm (handled at load).

@@ -1,12 +1,9 @@
 # Inference service runtime.
 #
-# The notebooks venv (services/inference/.venv) already contains most of this;
-# install this file into it (or a fresh venv) to run the service:
-#
 #   python -m venv .venv
 #   .venv/Scripts/pip install -r requirements.txt   # Windows
 #
-# Detection + OpenVINO backend (ultralytics pulls in torch).
+# Detection + segmentation + OpenVINO backend (ultralytics pulls in torch).
 fastapi
 uvicorn[standard]
 python-multipart
@@ -16,8 +13,11 @@ pillow
 ultralytics
 openvino
 
-# Stage B/C (masks + depth + classification) - uncomment when needed.
-# transformers
-# accelerate
-# onnxruntime
+# Depth (Depth Anything V2) and its one-off ONNX -> OpenVINO export.
+transformers
+onnx
+onnxscript
+
+# Stage C (cross-view fusion) / optional extras - uncomment when needed.
 # nncf            # OpenVINO INT8 quantisation
+# accelerate

@@ -61,12 +61,23 @@ class Aimed(BaseModel):
     pointCount: int | None = None
 
 
+class DepthResult(BaseModel):
+    """Colourised depth map for the `mode="depth"` view."""
+
+    png: str  # base64 PNG, same pixel size as the submitted image
+    width: int
+    height: int
+    min: float
+    max: float
+
+
 class ScanResponse(BaseModel):
     frameId: str
     width: int
     height: int
     detections: list[Detection]
     aimed: Aimed | None = None
+    depth: DepthResult | None = None
     timing: dict[str, float] = Field(default_factory=dict)
 
 
@@ -84,5 +95,9 @@ class ScanRequest(BaseModel):
     frameId: str = ""
     aimX: float = 0.5
     aimY: float = 0.5
+    # "scan" = detect + segment + lift; "depth" = depth map only.
+    mode: Literal["scan", "depth"] = "scan"
+    # Override the server's segmenter for this request.
+    segmenter: Literal["sam2", "yolo11"] | None = None
     # Horizontal FOV in degrees; falls back to the server default when omitted.
     fovDeg: float | None = None

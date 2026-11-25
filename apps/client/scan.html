@@ -6,45 +6,229 @@
       name="viewport"
       content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
     />
-    <title>Metroid Scan - Detection test (Stage A)</title>
+    <title>Metroid Scan - Detection test</title>
     <style>
-      :root { color-scheme: dark; }
-      html, body { margin: 0; height: 100%; overflow: hidden; background: #05080a;
-        font: 14px/1.4 ui-monospace, Menlo, monospace; color: #d7e2e6; }
-      #video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain;
-        background: #000; }
-      #overlay { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-      #reticle { position: fixed; left: 50%; top: 50%; width: 44px; height: 44px;
-        margin: -22px 0 0 -22px; border: 2px solid rgba(124,247,196,.7); border-radius: 50%; }
-      #bar { position: fixed; left: 0; right: 0; bottom: 16px; display: flex; gap: 10px;
-        justify-content: center; }
-      #bar button { font: inherit; padding: 14px 18px; border-radius: 12px;
-        border: 1px solid #2b4149; background: #12242b; color: #eaf6f3; }
-      #captureBtn { background: #0e3a2f; border-color: #1e7a5f; }
-      #bar button:disabled { opacity: .5; }
-      #card { position: fixed; left: 50%; top: 14%; transform: translateX(-50%);
-        padding: 10px 16px; border-radius: 10px; background: rgba(4,12,15,.82);
-        border: 1px solid #1e7a5f; color: #7cf7c4; text-align: center; min-width: 40vw; }
-      #topbar { position: fixed; left: 8px; top: 8px; right: 8px; display: flex;
-        justify-content: space-between; align-items: center; }
-      #topbar a { color: #7cf7c4; text-decoration: none; padding: 6px 10px;
-        border: 1px solid #1e3a44; border-radius: 8px; background: rgba(4,12,15,.7); }
-      #status { padding: 6px 10px; border-radius: 8px; background: rgba(4,12,15,.7); }
+      :root {
+        color-scheme: dark;
+        --accent: #7cf7c4;
+        --warm: #ffd54f;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #05080a;
+        font: 14px/1.4 ui-monospace, Menlo, monospace;
+        color: #d7e2e6;
+      }
+      #video {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        background: #000;
+      }
+      #overlay {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+      #overlay.hidden {
+        display: none;
+      }
+      #depthImg {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        background: #000;
+        display: none;
+        z-index: 5;
+      }
+      #depthImg.show {
+        display: block;
+      }
+
+      /* --- reticle --- */
+      #reticle {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        width: 48px;
+        height: 48px;
+        margin: -24px 0 0 -24px;
+        border: 2px solid rgba(124, 247, 196, 0.75);
+        border-radius: 50%;
+        pointer-events: none;
+        z-index: 7;
+        transition:
+          border-color 0.2s,
+          box-shadow 0.2s;
+      }
+      #reticle::before {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 6px;
+        height: 6px;
+        margin: -3px 0 0 -3px;
+        border-radius: 50%;
+        background: var(--accent);
+        transition: background 0.2s;
+      }
+      #reticle .ring {
+        position: absolute;
+        inset: -9px;
+        border-radius: 50%;
+        border: 3px solid transparent;
+        border-top-color: var(--warm);
+        opacity: 0;
+        transition: opacity 0.2s;
+      }
+      #reticle.scanning {
+        border-color: var(--warm);
+        box-shadow: 0 0 18px rgba(255, 213, 79, 0.45);
+        animation: pulse 1.2s ease-in-out infinite;
+      }
+      #reticle.scanning::before {
+        background: var(--warm);
+      }
+      #reticle.scanning .ring {
+        opacity: 1;
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.45;
+        }
+      }
+
+      /* --- chrome --- */
+      #topbar {
+        position: fixed;
+        left: 8px;
+        top: 8px;
+        right: 8px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        z-index: 8;
+      }
+      #status {
+        padding: 7px 12px;
+        border-radius: 8px;
+        background: rgba(4, 12, 15, 0.78);
+        border: 1px solid #1e3a44;
+      }
+      #status.busy {
+        border-color: var(--warm);
+        color: var(--warm);
+      }
+      #topbar a {
+        color: var(--accent);
+        text-decoration: none;
+        padding: 7px 12px;
+        border: 1px solid #1e3a44;
+        border-radius: 8px;
+        background: rgba(4, 12, 15, 0.78);
+      }
+      #card {
+        position: fixed;
+        left: 50%;
+        top: 14%;
+        transform: translateX(-50%);
+        padding: 10px 16px;
+        border-radius: 10px;
+        background: rgba(4, 12, 15, 0.82);
+        border: 1px solid #1e7a5f;
+        color: var(--accent);
+        text-align: center;
+        min-width: 40vw;
+        z-index: 8;
+        max-width: 90vw;
+      }
+      #bar {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 16px;
+        display: flex;
+        gap: 10px;
+        justify-content: center;
+        flex-wrap: wrap;
+        z-index: 8;
+      }
+      #bar button {
+        font: inherit;
+        padding: 14px 18px;
+        border-radius: 12px;
+        border: 1px solid #2b4149;
+        background: #12242b;
+        color: #eaf6f3;
+        cursor: pointer;
+      }
+      #bar button:disabled {
+        opacity: 0.5;
+      }
+      #scanBtn {
+        background: #0e3a2f;
+        border-color: #1e7a5f;
+      }
+      #depthBtn {
+        background: #2a2440;
+        border-color: #5b4b9c;
+      }
+      #backBtn {
+        display: none;
+        background: #3a2410;
+        border-color: #9c7a1e;
+      }
+      #backBtn.show {
+        display: inline-block;
+      }
+      #fastToggle.active {
+        background: #113a44;
+        border-color: var(--accent);
+        color: var(--accent);
+      }
     </style>
   </head>
   <body>
     <video id="video" playsinline muted autoplay></video>
     <canvas id="overlay"></canvas>
-    <div id="reticle"></div>
+    <img id="depthImg" alt="depth map" />
+    <div id="reticle"><span class="ring"></span></div>
+
     <div id="topbar">
       <span id="status">starting camera…</span>
       <a href="/">&larr; home</a>
     </div>
-    <div id="card">Aim the reticle and tap Capture &amp; scan</div>
+    <div id="card">Aim the reticle at an object, then Scan</div>
+
     <div id="bar">
-      <button id="captureBtn" disabled>Capture &amp; scan</button>
-      <button id="switchBtn">Flip camera</button>
+      <button id="scanBtn" disabled>Scan</button>
+      <button id="depthBtn" disabled>Depth</button>
+      <button id="fastToggle" title="YOLO11-seg on the iGPU instead of SAM 2.1">
+        Fast mask: off
+      </button>
+      <button id="backBtn">Back to feed</button>
     </div>
+
     <pre id="debug"></pre>
     <script type="module" src="/src/scan.ts"></script>
   </body>

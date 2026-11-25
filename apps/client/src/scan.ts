@@ -1,9 +1,10 @@
 /**
- * Stage A verification page.
+ * Detection / depth test page.
  *
  * Live camera -> capture a downscaled still -> POST /api/scan -> draw the
- * returned YOLO boxes, highlighting the one under the reticle. This exercises
- * the whole phone -> gateway -> inference -> phone loop without any AR.
+ * result. Two modes:
+ *   * Scan  - YOLO boxes + the aimed object's segmentation silhouette.
+ *   * Depth - the depth model's output, shown in place of the camera feed.
  */
 import type { ScanResult } from "@metroid-scan/shared";
 import { installDebugOverlay, log } from "./lib/debug";
@@ -12,18 +13,24 @@ installDebugOverlay();
 
 const video = document.getElementById("video") as HTMLVideoElement;
 const overlay = document.getElementById("overlay") as HTMLCanvasElement;
-const captureBtn = document.getElementById("captureBtn") as HTMLButtonElement;
-const switchBtn = document.getElementById("switchBtn") as HTMLButtonElement;
+const depthImg = document.getElementById("depthImg") as HTMLImageElement;
+const reticle = document.getElementById("reticle")!;
+const scanBtn = document.getElementById("scanBtn") as HTMLButtonElement;
+const depthBtn = document.getElementById("depthBtn") as HTMLButtonElement;
+const fastToggle = document.getElementById("fastToggle") as HTMLButtonElement;
+const backBtn = document.getElementById("backBtn") as HTMLButtonElement;
 const statusEl = document.getElementById("status")!;
 const cardEl = document.getElementById("card")!;
 
 const MAX_EDGE = 640;
 let stream: MediaStream | null = null;
 let facing: "environment" | "user" = "environment";
+let busy = false;
+let fastMask = false;
 
 async function startCamera() {
   stream?.getTracks().forEach((t) => t.stop());
-  statusEl.textContent = "starting camera…";
+  setStatus("starting camera…");
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       video: {
@@ -35,16 +42,17 @@ async function startCamera() {
     });
     video.srcObject = stream;
     await video.play();
-    captureBtn.disabled = false;
-    statusEl.textContent = `${video.videoWidth}×${video.videoHeight} · ready`;
+    scanBtn.disabled = false;
+    depthBtn.disabled = false;
+    setStatus("Ready");
     layoutOverlay();
   } catch (e) {
-    statusEl.textContent = `camera failed: ${String(e)}`;
+    setStatus("camera failed");
     log(`getUserMedia failed: ${String(e)}`);
   }
 }
 
-function snapshot(): { base64: string; width: number; height: number } {
+function snapshot(): string {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   const scale = Math.min(1, MAX_EDGE / Math.max(vw, vh));
@@ -55,7 +63,7 @@ function snapshot(): { base64: string; width: number; height: number } {
   canvas.height = height;
   canvas.getContext("2d")!.drawImage(video, 0, 0, width, height);
   const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
-  return { base64: dataUrl.slice(dataUrl.indexOf(",") + 1), width, height };
+  return dataUrl.slice(dataUrl.indexOf(",") + 1);
 }
 
 /** The rect the video is actually drawn in, given object-fit: contain. */
@@ -102,7 +110,7 @@ function draw(result: ScanResult) {
     const y = rect.y + y1 * sy;
 
     if (isAimed && aimed?.contour2d && aimed.contour2d.length > 2) {
-      // Stage B: smooth silhouette from the segmentation mask.
+      // Smooth silhouette from the segmentation mask.
       ctx.beginPath();
       aimed.contour2d.forEach(([u, v], k) => {
         const px = rect.x + u * sx;
@@ -125,47 +133,91 @@ function draw(result: ScanResult) {
   });
 }
 
-async function capture() {
-  captureBtn.disabled = true;
-  const { base64 } = snapshot();
+function setStatus(text: string, scanning = false) {
+  statusEl.textContent = text;
+  statusEl.classList.toggle("busy", scanning);
+  reticle.classList.toggle("scanning", scanning);
+}
+
+function setBusy(value: boolean) {
+  busy = value;
+  scanBtn.disabled = value;
+  depthBtn.disabled = value;
+}
+
+const ms = (v?: number) => (v == null ? "-" : `${v.toFixed(0)}ms`);
+
+function showDepth(result: ScanResult) {
+  if (!result.depth) return;
+  depthImg.src = `data:image/png;base64,${result.depth.png}`;
+  depthImg.classList.add("show");
+  overlay.classList.add("hidden");
+  backBtn.classList.add("show");
+  cardEl.textContent = `Depth · range ${result.depth.min.toFixed(2)}–${result.depth.max.toFixed(2)}`;
+}
+
+function hideDepth() {
+  depthImg.classList.remove("show");
+  depthImg.removeAttribute("src");
+  overlay.classList.remove("hidden");
+  backBtn.classList.remove("show");
+  setStatus("Ready");
+}
+
+async function capture(mode: "scan" | "depth") {
+  if (busy) return;
+  setBusy(true);
+  setStatus(mode === "depth" ? "Measuring depth…" : "Scanning…", true);
+  const image = snapshot();
   const t0 = performance.now();
   try {
     const res = await fetch("/api/scan", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        image: base64,
+        image,
         frameId: String(Date.now()),
         aimX: 0.5,
         aimY: 0.5,
+        mode,
+        segmenter: fastMask ? "yolo11" : undefined,
       }),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const result = (await res.json()) as ScanResult;
     const rtt = performance.now() - t0;
-    draw(result);
-    const t = result.timing;
-    const ms = (v?: number) => (v == null ? "-" : v.toFixed(0));
-    log(
-      `scan ok: ${result.detections.length} dets  detect ${ms(t.detect)} ` +
-        `segment ${ms(t.segment)} depth ${ms(t.depth)} ms  rtt ${rtt.toFixed(0)} ms`,
-    );
-    cardEl.textContent = result.aimed
-      ? `SCANNED: ${result.aimed.name}` +
-        (result.aimed.pointCount ? ` · ${result.aimed.pointCount} pts` : "")
-      : "No object under the reticle";
+
+    if (mode === "depth") {
+      showDepth(result);
+      setStatus(`Depth ${ms(result.timing.depth)} · ${rtt.toFixed(0)}ms round trip`);
+    } else {
+      draw(result);
+      const aimed = result.aimed;
+      cardEl.textContent = aimed
+        ? `SCANNED: ${aimed.name}${aimed.pointCount ? ` · ${aimed.pointCount} pts` : ""}`
+        : "No object under the reticle";
+      setStatus(
+        `Scan ${ms(result.timing.detect)} det · ${ms(result.timing.segment)} seg · ` +
+          `${ms(result.timing.depth)} depth · ${rtt.toFixed(0)}ms round trip`,
+      );
+      log(`scan ok: ${result.detections.length} dets · ${rtt.toFixed(0)} ms rtt`);
+    }
   } catch (e) {
+    setStatus("Error");
+    cardEl.textContent = "failed — is the gateway + inference running?";
     log(`scan failed: ${String(e)}`);
-    cardEl.textContent = "scan failed — is the gateway + inference running?";
   } finally {
-    captureBtn.disabled = false;
+    setBusy(false);
   }
 }
 
-captureBtn.addEventListener("click", () => void capture());
-switchBtn.addEventListener("click", () => {
-  facing = facing === "environment" ? "user" : "environment";
-  void startCamera();
+scanBtn.addEventListener("click", () => void capture("scan"));
+depthBtn.addEventListener("click", () => void capture("depth"));
+backBtn.addEventListener("click", hideDepth);
+fastToggle.addEventListener("click", () => {
+  fastMask = !fastMask;
+  fastToggle.classList.toggle("active", fastMask);
+  fastToggle.textContent = `Fast mask: ${fastMask ? "on" : "off"}`;
 });
 window.addEventListener("resize", layoutOverlay);
 video.addEventListener("loadedmetadata", layoutOverlay);

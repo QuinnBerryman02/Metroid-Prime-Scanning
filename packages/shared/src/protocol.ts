@@ -58,12 +58,27 @@ export interface Aimed {
   pointCount?: number;
 }
 
+/** Colourised depth map returned by `mode: "depth"`. */
+export interface DepthResult {
+  /** base64 PNG (no data-URI prefix). */
+  png: string;
+  width: number;
+  height: number;
+  min: number;
+  max: number;
+}
+
 /** POST /scan request (base64 image, no data-URI prefix). */
 export interface ScanRequest {
   image: string;
   frameId?: string;
   aimX?: number;
   aimY?: number;
+  /** "scan" = detect + segment + lift; "depth" = depth map only. */
+  mode?: "scan" | "depth";
+  /** Override the server's segmenter for this request. */
+  segmenter?: "sam2" | "yolo11";
+  fovDeg?: number;
 }
 
 /** POST /scan response. */
@@ -73,6 +88,7 @@ export interface ScanResult {
   height: number;
   detections: Detection[];
   aimed: Aimed | null;
+  depth?: DepthResult | null;
   timing: Record<string, number>;
 }
 
