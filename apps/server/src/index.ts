@@ -17,6 +17,8 @@ import type {
   AnchorMsg,
   ClientToServer,
   PoseBroadcastMsg,
+  ScanRequest,
+  ScanResult,
   ServerToClient,
   WorldDeltaMsg,
   WorldObject,
@@ -39,7 +41,7 @@ const clients = new Map<WebSocket, ClientState>();
 const latestPose = new Map<string, PoseBroadcastMsg>();
 const anchors = new Map<string, AnchorMsg[]>();
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: true, bodyLimit: 20 * 1024 * 1024 });
 await app.register(cors, { origin: true });
 await app.register(websocket);
 
@@ -62,6 +64,42 @@ app.get("/health", async () => ({
 }));
 
 app.get("/world", async () => ({ objects: [...world.values()] }));
+
+/**
+ * Forward a keyframe to the inference service. The phone posts here (via the
+ * Vite `/api` proxy) so it only ever talks to the gateway.
+ * Stage A: detection boxes. Stage B will add lifted camera-space geometry.
+ */
+app.post("/scan", async (req, reply) => {
+  const body = req.body as ScanRequest | undefined;
+  if (!body?.image) {
+    reply.code(400);
+    return { error: "missing base64 image" };
+  }
+  try {
+    const res = await fetch(`${INFERENCE_URL}/scan`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const detail = await res.text();
+      req.log.warn({ status: res.status, detail }, "inference /scan failed");
+      reply.code(502);
+      return { error: `inference ${res.status}`, detail };
+    }
+    const result = (await res.json()) as ScanResult;
+    req.log.info(
+      { detections: result.detections.length, aimed: result.aimed?.name },
+      "scan",
+    );
+    return result;
+  } catch (e) {
+    req.log.error({ err: e }, "inference unreachable");
+    reply.code(502);
+    return { error: `inference unreachable: ${String(e)}` };
+  }
+});
 
 app.register(async (f) => {
   f.get("/ws", { websocket: true }, (socket) => {

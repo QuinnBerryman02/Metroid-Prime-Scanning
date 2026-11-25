@@ -59,14 +59,22 @@ viewer shows the phone's live pose in a shared world. *(ready for device test)*
 
 ## Milestone 2 - Detection + segmentation service (1 week)
 
-- [ ] FastAPI `/scan` endpoint: accepts JPEG (+ optional intrinsics), returns detections.
-- [ ] YOLO11n detection via OpenVINO; then FastSAM-s (or MobileSAM) for masks.
-- [ ] Post-process to a stable JSON schema (`Detection {box, mask{rle|png}, score, label}`).
-- [ ] Test harness: run over a folder of stills, visualise overlays, measure latency.
+Stage A (done):
+
+- [x] FastAPI `/scan` endpoint: accepts a base64 keyframe, returns detections.
+- [x] YOLO11n detection via OpenVINO on the iGPU (`xpu`), auto-export + warmup.
+- [x] Stable JSON schema (`Detection {box, mask?, score, label}`) + `aimed` object
+      with Stage-B fields (`contourCam`/`obbCam`) already present.
+- [x] Test harness (`scripts/test_scan.py`); measured ~20 ms/scan on the iGPU.
+- [x] Gateway `POST /scan` proxy + `/scan.html` phone verification page.
+
+Stage B (next):
+
+- [ ] Add `mask` (SAM 2.1 prompted at the reticle) and lift it to camera-space
+      `contourCam` / `obbCam` (see `docs/LIFTING.md`).
 - [ ] Optional: CLIP zero-shot classifier on crops; Florence-2 caption (async).
 
-**Done when:** a photo gives masks + labels in < ~150 ms on the target machine and results
-look sensible across a handful of test photos.
+**Stage A done when:** a photo gives labels back in < ~150 ms. (achieved, ~20 ms)
 
 **De-risk here:** OpenVINO export/quantisation path, iGPU vs CPU device selection.
 

@@ -23,6 +23,7 @@ Point the phone at your environment, scan objects, and the system:
 | Landing | `/` | support check + links |
 | **AR scan visor** | `/ar.html` | phone: hit-test reticle, anchored placement, live pose (MS1) |
 | **Desktop viewer** | `/viewer.html` | shows the phone's live pose in a shared world (MS1) |
+| Detection test | `/scan.html` | Stage A: camera still -> server -> YOLO boxes |
 | Capability test | `/capabilities.html` | what the device exposes (depth, planes, anchors, ...) |
 
 ## Status
@@ -35,7 +36,10 @@ Point the phone at your environment, scan objects, and the system:
   default, smooth masks are the planned "scan action".
 - **MS2** OpenVINO check - done. `services/inference/samples/openvino_check.py`; iGPU is
   2.3x faster than CPU for YOLO11n (NPU available too).
-- **MS2** detection + segmentation service - next
+- **MS2** detection service (Stage A) - done. `POST /scan` runs YOLO11n via OpenVINO
+  on the iGPU (~20 ms), returns boxes + labels and the aimed object; the gateway and
+  `/scan.html` are wired end-to-end.
+- **MS2** segmentation + lifting (Stage B) - next (schema already allows it)
 
 Verify the pose relay without a phone:
 

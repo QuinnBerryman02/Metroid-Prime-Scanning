@@ -1,71 +1,124 @@
 """
-Metroid-scan inference service (skeleton).
+Metroid-scan inference service.
 
-Endpoints (see docs/MODELS.md):
-  GET  /health          - readiness + which OpenVINO device is in use
-  POST /scan            - detect + segment a keyframe  -> Detection[]
-  POST /depth           - monocular depth for a frame
-  POST /classify        - CLIP zero-shot classification of an image crop
-  POST /describe        - VLM caption / explanation for an object crop
+Stage A: `/scan` returns YOLO detections (boxes + labels) for a keyframe.
+The response schema already carries the Stage-B/C fields (mask / contourCam /
+obbCam) so the phone can lift the aimed object into the world later - see
+`docs/LIFTING.md`.
 
-Everything is OpenVINO-based and device-selectable via OV_DEVICE
-(GPU | CPU | AUTO | MULTI:GPU,CPU).
+Run:
+    uvicorn app.main:app --host 0.0.0.0 --port 8000
 """
 from __future__ import annotations
 
-import os
+import base64
+import binascii
+import io
+import logging
+import time
+import uuid
+from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, File, UploadFile
-from pydantic import BaseModel
+import numpy as np
+from fastapi import FastAPI, HTTPException
+from PIL import Image
 
-OV_DEVICE = os.environ.get("OV_DEVICE", "AUTO")
-MODELS_DIR = os.environ.get("MODELS_DIR", "./models")
+from .config import CONF, DEVICE, EXPORT_OPENVINO, IMGSZ, MODEL_PATH
+from .detector import Detector
+from .schemas import Aimed, Detection, ScanRequest, ScanResponse
 
-app = FastAPI(title="metroid-scan inference", version="0.0.1")
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("inference")
 
-
-class Health(BaseModel):
-    ok: bool
-    device: str
-    models_loaded: list[str]
-
-
-@app.get("/health", response_model=Health)
-def health() -> Health:
-    return Health(ok=True, device=OV_DEVICE, models_loaded=[])
+state: dict[str, Any] = {}
 
 
-@app.post("/scan")
-async def scan(image: UploadFile = File(...)) -> dict[str, Any]:
-    """Detect + segment objects in a keyframe.
-
-    TODO: YOLO11n (OpenVINO) for boxes, FastSAM-s / MobileSAM for masks.
-    """
-    _ = await image.read()
-    # TODO: real inference
-    return {"detections": []}
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    state["detector"] = Detector(MODEL_PATH, DEVICE, IMGSZ, CONF, EXPORT_OPENVINO)
+    log.info("ready (device=%s)", DEVICE)
+    yield
+    state.clear()
 
 
-@app.post("/depth")
-async def depth(image: UploadFile = File(...)) -> dict[str, Any]:
-    """Monocular depth map (Depth Anything V2 small -> fp16 OpenVINO).
-
-    TODO: return a normalised float depth map (e.g. base64 npy/png).
-    """
-    _ = await image.read()
-    return {"depth": None}
+app = FastAPI(title="metroid-scan inference", version="0.1.0", lifespan=lifespan)
 
 
-@app.post("/classify")
-async def classify(image: UploadFile = File(...)) -> dict[str, Any]:
-    """CLIP zero-shot classification of an object crop."""
-    _ = await image.read()
-    return {"label": "unknown", "confidence": 0.0}
+def pick_aimed(
+    detections: list[Detection], aim_x: float, aim_y: float, width: int, height: int
+) -> int | None:
+    """Index of the detection under the reticle, else the nearest by centre."""
+    if not detections:
+        return None
+    ax, ay = aim_x * width, aim_y * height
+    for i, d in enumerate(detections):
+        x1, y1, x2, y2 = d.box
+        if x1 <= ax <= x2 and y1 <= ay <= y2:
+            return i
+    best, best_dist = None, float("inf")
+    for i, d in enumerate(detections):
+        cx, cy = (d.box[0] + d.box[2]) / 2, (d.box[1] + d.box[3]) / 2
+        dist = (cx - ax) ** 2 + (cy - ay) ** 2
+        if dist < best_dist:
+            best, best_dist = i, dist
+    return best
 
 
-@app.post("/describe")
-async def describe(image: UploadFile = File(...)) -> dict[str, Any]:
-    """Florence-2 / BLIP caption for the Metroid-style scan info card."""
-    _ = await image.read()
-    return {"description": ""}
+@app.get("/health")
+def health() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "device": DEVICE,
+        "model": MODEL_PATH,
+        "loaded": "detector" in state,
+        "classes": len(getattr(state.get("detector"), "names", {}) or {}),
+    }
+
+
+@app.post("/scan", response_model=ScanResponse)
+async def scan(req: ScanRequest) -> ScanResponse:
+    detector: Detector | None = state.get("detector")
+    if detector is None:
+        raise HTTPException(status_code=503, detail="detector not loaded")
+
+    try:
+        raw = base64.b64decode(req.image, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise HTTPException(status_code=400, detail=f"bad base64 image: {e}") from e
+    if not raw:
+        raise HTTPException(status_code=400, detail="empty image")
+    try:
+        img = np.array(Image.open(io.BytesIO(raw)).convert("RGB"))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"bad image: {e}") from e
+    height, width = img.shape[:2]
+    frame_id = req.frameId
+    aim_x, aim_y = req.aimX, req.aimY
+
+    t0 = time.perf_counter()
+    detections = detector.detect(img)
+    detect_ms = (time.perf_counter() - t0) * 1000
+
+    aimed = None
+    idx = pick_aimed(detections, aim_x, aim_y, width, height)
+    if idx is not None:
+        d = detections[idx]
+        # Stage A: no geometry yet. Stage B will fill contourCam/obbCam here.
+        aimed = Aimed(detectionIndex=idx, classId=d.classId, name=d.label)
+
+    log.info(
+        "scan %s: %d detections (aimed=%s) in %.0f ms",
+        frame_id or "(no id)",
+        len(detections),
+        aimed.name if aimed else "-",
+        detect_ms,
+    )
+    return ScanResponse(
+        frameId=frame_id or uuid.uuid4().hex,
+        width=width,
+        height=height,
+        detections=detections,
+        aimed=aimed,
+        timing={"detect": round(detect_ms, 2)},
+    )

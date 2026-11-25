@@ -1,19 +1,23 @@
-# Core service
-fastapi==0.115.5
-uvicorn[standard]==0.32.0
-python-multipart==0.0.17
-pydantic==2.10.1
-numpy==2.1.3
-pillow==11.0.0
-opencv-python-headless==4.10.0.84
+# Inference service runtime.
+#
+# The notebooks venv (services/inference/.venv) already contains most of this;
+# install this file into it (or a fresh venv) to run the service:
+#
+#   python -m venv .venv
+#   .venv/Scripts/pip install -r requirements.txt   # Windows
+#
+# Detection + OpenVINO backend (ultralytics pulls in torch).
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+numpy
+pillow
+ultralytics
+openvino
 
-# Inference runtime (Intel iGPU/CPU). Swap for a CUDA/ort stack if needed.
-openvino==2024.5.0
-openvino-genai==2024.5.0
-onnx==1.17.0
-# onnxruntime==1.20.1            # fallback CPU/DirectML runtime
-
-# Model exports / conversion
-# ultralytics==8.3.40            # YOLO / FastSAM export
-# transformers==4.46.3           # CLIP / Florence-2 / BLIP
-# timm==1.0.11
+# Stage B/C (masks + depth + classification) - uncomment when needed.
+# transformers
+# accelerate
+# onnxruntime
+# nncf            # OpenVINO INT8 quantisation

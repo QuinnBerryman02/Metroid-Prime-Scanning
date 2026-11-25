@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
+    <title>Metroid Scan - Detection test (Stage A)</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #05080a;
+        font: 14px/1.4 ui-monospace, Menlo, monospace; color: #d7e2e6; }
+      #video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain;
+        background: #000; }
+      #overlay { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+      #reticle { position: fixed; left: 50%; top: 50%; width: 44px; height: 44px;
+        margin: -22px 0 0 -22px; border: 2px solid rgba(124,247,196,.7); border-radius: 50%; }
+      #bar { position: fixed; left: 0; right: 0; bottom: 16px; display: flex; gap: 10px;
+        justify-content: center; }
+      #bar button { font: inherit; padding: 14px 18px; border-radius: 12px;
+        border: 1px solid #2b4149; background: #12242b; color: #eaf6f3; }
+      #captureBtn { background: #0e3a2f; border-color: #1e7a5f; }
+      #bar button:disabled { opacity: .5; }
+      #card { position: fixed; left: 50%; top: 14%; transform: translateX(-50%);
+        padding: 10px 16px; border-radius: 10px; background: rgba(4,12,15,.82);
+        border: 1px solid #1e7a5f; color: #7cf7c4; text-align: center; min-width: 40vw; }
+      #topbar { position: fixed; left: 8px; top: 8px; right: 8px; display: flex;
+        justify-content: space-between; align-items: center; }
+      #topbar a { color: #7cf7c4; text-decoration: none; padding: 6px 10px;
+        border: 1px solid #1e3a44; border-radius: 8px; background: rgba(4,12,15,.7); }
+      #status { padding: 6px 10px; border-radius: 8px; background: rgba(4,12,15,.7); }
+    </style>
+  </head>
+  <body>
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="overlay"></canvas>
+    <div id="reticle"></div>
+    <div id="topbar">
+      <span id="status">starting camera…</span>
+      <a href="/">&larr; home</a>
+    </div>
+    <div id="card">Aim the reticle and tap Capture &amp; scan</div>
+    <div id="bar">
+      <button id="captureBtn" disabled>Capture &amp; scan</button>
+      <button id="switchBtn">Flip camera</button>
+    </div>
+    <pre id="debug"></pre>
+    <script type="module" src="/src/scan.ts"></script>
+  </body>
+</html>

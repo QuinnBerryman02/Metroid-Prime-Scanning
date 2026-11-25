@@ -29,10 +29,47 @@ export interface Detection {
   classId: number;
   label: string;
   score: number;
-  /** [x, y, w, h] in pixels of the submitted (downscaled) image. */
+  /** [x1, y1, x2, y2] in pixels of the submitted (downscaled) image. */
   box: [number, number, number, number];
   /** Optional per-pixel mask, RLE or base64-PNG, in the same image space. */
   mask?: { encoding: "rle" | "png"; data: string };
+}
+
+/** Oriented bounding box in camera space (Stage B). */
+export interface Obb {
+  center: Vec3;
+  size: Vec3;
+  quat: Quat;
+}
+
+/** The object under the reticle. Stage A fills only index/class/label. */
+export interface Aimed {
+  detectionIndex: number;
+  classId: number;
+  name?: string;
+  /** Camera-space (origin = camera, +z forward) - see docs/LIFTING.md. */
+  contourCam?: Vec3[];
+  obbCam?: Obb;
+  depthAtCentre?: number;
+  scaleHint?: string;
+}
+
+/** POST /scan request (base64 image, no data-URI prefix). */
+export interface ScanRequest {
+  image: string;
+  frameId?: string;
+  aimX?: number;
+  aimY?: number;
+}
+
+/** POST /scan response. */
+export interface ScanResult {
+  frameId: string;
+  width: number;
+  height: number;
+  detections: Detection[];
+  aimed: Aimed | null;
+  timing: Record<string, number>;
 }
 
 /** Classification / explanation attached to a scanned object. */

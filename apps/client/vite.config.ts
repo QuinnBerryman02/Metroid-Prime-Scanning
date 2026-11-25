@@ -64,7 +64,11 @@ export default defineConfig({
     // mixed-content (https page -> ws://) requests. Client code should use
     // relative URLs: fetch("/api/...") and new WebSocket(`.../ws`).
     proxy: {
-      "/api": { target: "http://localhost:3000", changeOrigin: true },
+      "/api": {
+        target: "http://localhost:3000",
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/api/, ""),
+      },
       "/ws": { target: "ws://localhost:3000", ws: true },
     },
   },
@@ -75,6 +79,7 @@ export default defineConfig({
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
         ar: fileURLToPath(new URL("./ar.html", import.meta.url)),
         viewer: fileURLToPath(new URL("./viewer.html", import.meta.url)),
+        scan: fileURLToPath(new URL("./scan.html", import.meta.url)),
         capabilities: fileURLToPath(
           new URL("./capabilities.html", import.meta.url),
         ),
