@@ -73,6 +73,33 @@ docs/            plans and design notes
 
 ```bash
 npm install
+npm run dev
+```
+
+`npm run dev` starts the whole stack with colour-coded, prefixed output per service
+and stops everything on `Ctrl+C`:
+
+| service | url | prefixed as |
+|---|---|---|
+| inference (FastAPI + OpenVINO) | http://127.0.0.1:8000 | `[inference]` |
+| gateway (Fastify + WS) | http://localhost:3000 | `[gateway]` |
+| client (Vite, HTTPS) | https://localhost:5173 | `[client]` |
+
+It auto-detects the Python venv at `services/inference/.venv` (Windows or POSIX
+layout). If that venv doesn't exist yet, it warns and runs just the gateway + client:
+
+```bash
+cd services/inference
+python -m venv .venv
+.venv/Scripts/pip install -r requirements.txt   # .venv/bin/pip on macOS/Linux
+```
+
+The first inference startup takes ~20-30 s (OpenVINO compiles the model; it warms
+up at load so the first `/scan` is fast).
+
+Run services individually when you want to:
+
+```bash
 npm run dev:inference   # python model service on :8000
 npm run dev:server      # gateway on :3000
 npm run dev:client      # web app on :5173 (HTTPS, see below)
