@@ -49,6 +49,7 @@ npm run smoke:ws                                    # pose + anchor relay
 
 - [`docs/PLAN.md`](docs/PLAN.md) - implementation plan, milestones, task breakdown
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - system + data-flow design
+- [`docs/LIFTING.md`](docs/LIFTING.md) - how a 2D mask becomes an anchored 3D object
 - [`docs/MODELS.md`](docs/MODELS.md) - model choices (iGPU-friendly) and why
 
 ## Layout

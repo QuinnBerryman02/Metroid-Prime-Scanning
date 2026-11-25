@@ -81,6 +81,8 @@ time. The server never guesses; the viewer applies the same transform. Keep a
 
 ## 5. Pipeline: 2D detection -> 3D anchor
 
+> Full detail, maths, API shape and limitations: [`docs/LIFTING.md`](LIFTING.md).
+
 The central problem the brief calls out: *2D masks don't anchor*. Solution - **lift to 3D**
 with depth + pose, instead of relying on a 3D SAM.
 
