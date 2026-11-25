@@ -30,7 +30,11 @@ Point the phone at your environment, scan objects, and the system:
 - **MS0** repo & tooling - done
 - **MS1** WebXR AR skeleton + pose/anchor relay - done (hit-test reticle, WebXR anchors,
   device pose + placed anchors -> gateway -> viewer)
-- **MS2** model exploration - done (`services/inference/notebooks/`, all models verified on CPU)
+- **MS2** model exploration - done. `services/inference/notebooks/` verifies YOLO11n,
+  FastSAM, MobileSAM, SAM 2.1, Depth Anything V2 and CLIP; boxed detection is the
+  default, smooth masks are the planned "scan action".
+- **MS2** OpenVINO check - done. `services/inference/samples/openvino_check.py`; iGPU is
+  2.3x faster than CPU for YOLO11n (NPU available too).
 - **MS2** detection + segmentation service - next
 
 Verify the pose relay without a phone:

@@ -24,6 +24,8 @@ venv/
 
 # models / weights (large binaries - fetch via script instead)
 models/
+*_openvino_model/
+ov_models/
 *.onnx
 *.pt
 *.pth

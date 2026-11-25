@@ -46,6 +46,30 @@ Fallbacks if OpenVINO proves awkward: `onnxruntime-directml` (Windows) or
 Design the pipeline so **detection + depth run on every keyframe**, while the expensive
 **classifier/captioner runs once per new object** (cached by object id).
 
+## Measured on the target machine (Intel Core Ultra 7 165U, iGPU)
+
+`services/inference/samples/openvino_check.py` — YOLO11n @ 640, 15 runs:
+
+| device | ms/run |
+|---|---|
+| `intel:cpu` | 50.4 |
+| `xpu` | **21.7** (2.3x) |
+| `npu` | 25.1 |
+
+So the plan is sound: OpenVINO + iGPU gives a ~2.3x win, NPU is a nice backup.
+
+Notebook findings (`services/inference/notebooks`):
+
+- YOLO11n, FastSAM-s, MobileSAM, Depth Anything V2, CLIP all run (CPU).
+- **SAM 2.1 tiny** gives the best smooth object mask (box or point prompt,
+  ~2 s CPU) — the recommended "scan action" model. SAM ViT-B is better still
+  but ~10 s CPU, so only worth it once exported to OpenVINO.
+- FastSAM is class-agnostic and fragments large objects; good for whole-frame
+  masks without a prompt, not for isolating one object.
+- Unprojecting **mask** pixels (not the whole box) removes the background and
+  makes the 3D shell recognisable. Depth is still *relative*, so scale must be
+  fixed from AR planes / known size.
+
 ## Model files & fetching
 
 Weights are **not** committed (see `.gitignore`). Add a `services/inference/scripts/fetch_models.*`

@@ -13,6 +13,9 @@ transformers>=4.44
 accelerate>=0.34
 safetensors
 
+# OpenVINO (device check / export; also used by ../requirements.txt)
+openvino
+
 # Notebook + plotting
 jupyterlab
 ipykernel

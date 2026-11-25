@@ -3,10 +3,21 @@
 Notebooks for verifying each model works on this machine *before* it becomes a
 service. See the repo's `docs/MODELS.md` for the reasoning.
 
-`01_model_exploration.ipynb` has been run end-to-end on this machine (CPU):
-YOLO11n detects `bus` + 4 `person`; FastSAM-s returns ~90 masks; MobileSAM
-returns a single mask for a point prompt; Depth Anything V2 produces a full-size
-depth map; CLIP classifies the bus image as `bus` at 0.997.
+| Notebook | What it shows |
+|---|---|
+| `01_model_exploration.ipynb` | one model per section: detection, segmentation, depth, CLIP, a 2D->3D lifting demo, OpenVINO notes |
+| `02_smooth_segmentation.ipynb` | boxes -> smooth masks (FastSAM / MobileSAM / SAM 2.1) -> coloured outline -> mask-based 3D shell |
+
+Both have been run end-to-end here (CPU). Findings:
+
+- YOLO11n detects `bus` + 4 `person`; CLIP labels the bus image `bus` at 0.997.
+- Depth Anything V2 gives a clean full-size depth map.
+- **SAM 2.1 tiny** (box prompt, ~2 s CPU) gives the best smooth object mask and
+  is the recommended "scan action" model. MobileSAM is similar but coarser.
+- FastSAM is class-agnostic and splits a large object up, so it is best used
+  only when we need to mask the whole frame without a prompt.
+- 3D: unprojecting only the **mask** pixels (vs the whole box) removes the
+  background and gives a far more recognisable shell.
 
 ## Setup (once)
 
@@ -55,6 +66,29 @@ Open **`01_model_exploration.ipynb`** and run all cells top to bottom.
 - **Section 8**: a recognisable 3D blob for the detected object.
 
 Jot down which models felt fast enough; that feeds the `/scan` endpoint design.
+
+## OpenVINO / iGPU check
+
+`../scripts/openvino_check.py` lists the OpenVINO devices and benchmarks YOLO11n
+on each. It was run on this machine (Intel Core Ultra 7 165U):
+
+```
+devices: ['CPU', 'GPU', 'NPU']
+  CPU    Intel(R) Core(TM) Ultra 7 165U
+  GPU    Intel(R) Graphics (iGPU)
+  NPU    Intel(R) AI Boost
+
+YOLO11n @ 640, 15 runs:
+  intel:cpu      50.4 ms/run
+  xpu            21.7 ms/run    <-- 2.3x speedup (Intel iGPU)
+  npu            25.1 ms/run    (Intel AI Boost)
+```
+
+Run it yourself:
+
+```bash
+.venv/Scripts/python.exe ../scripts/openvino_check.py --runs 15
+```
 
 ## Troubleshooting
 
