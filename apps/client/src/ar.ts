@@ -173,13 +173,21 @@ async function place() {
   }
   const pos = currentHit.position.clone();
   const quat = currentHit.quaternion.clone();
+  const SIZE = 0.12;
+  const id = `box-${placed.length}`;
   try {
-    const box = MeshBuilder.CreateBox(`box-${placed.length}`, { size: 0.12 }, scene);
+    const box = MeshBuilder.CreateBox(id, { size: SIZE }, scene);
     box.material = boxMat;
     box.position.copyFrom(pos);
     const anchor = await anchorSystem.addAnchorAtPositionAndRotationAsync(pos, quat);
     anchor.attachedNode = box;
     placed.push(box);
+    gateway.sendAnchor(
+      id,
+      [pos.x, pos.y, pos.z],
+      [quat.x, quat.y, quat.z, quat.w],
+      [SIZE, SIZE, SIZE],
+    );
     log(`anchor #${placed.length} placed @ ${pos.x.toFixed(2)},${pos.y.toFixed(2)},${pos.z.toFixed(2)}`);
   } catch (e) {
     log(`anchor failed: ${String(e)}`);
@@ -190,6 +198,7 @@ function clearBoxes() {
   for (const b of placed) b.dispose();
   placed.length = 0;
   anchorSystem?.anchors.forEach((a) => a.remove());
+  gateway.sendAnchorClear();
   log("cleared");
 }
 

@@ -28,8 +28,8 @@ Point the phone at your environment, scan objects, and the system:
 ## Status
 
 - **MS0** repo & tooling - done
-- **MS1** WebXR AR skeleton + pose relay - done (hit-test reticle, WebXR anchors,
-  device pose -> gateway -> viewer)
+- **MS1** WebXR AR skeleton + pose/anchor relay - done (hit-test reticle, WebXR anchors,
+  device pose + placed anchors -> gateway -> viewer)
 - **MS2** detection + segmentation service - next
 
 Verify the pose relay without a phone:
@@ -37,7 +37,7 @@ Verify the pose relay without a phone:
 ```bash
 npm run build --workspace @metroid-scan/server
 npm run start --workspace @metroid-scan/server &   # gateway on :3000
-npm run smoke:ws                                    # device -> gateway -> viewer
+npm run smoke:ws                                    # pose + anchor relay
 ```
 
 ## Docs

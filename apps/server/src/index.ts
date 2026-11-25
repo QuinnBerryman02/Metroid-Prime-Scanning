@@ -13,6 +13,8 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket, { type WebSocket } from "@fastify/websocket";
 import type {
+  AnchorClearMsg,
+  AnchorMsg,
   ClientToServer,
   PoseBroadcastMsg,
   ServerToClient,
@@ -35,6 +37,7 @@ interface ClientState {
 const world = new Map<string, WorldObject>();
 const clients = new Map<WebSocket, ClientState>();
 const latestPose = new Map<string, PoseBroadcastMsg>();
+const anchors = new Map<string, AnchorMsg[]>();
 
 const app = Fastify({ logger: true });
 await app.register(cors, { origin: true });
@@ -71,8 +74,9 @@ app.register(async (f) => {
       updated: [],
       removed: [],
     } satisfies WorldDeltaMsg);
-    // Replay known device poses to a newly connected viewer.
+    // Replay known device poses + anchors to a newly connected viewer.
     for (const pose of latestPose.values()) send(socket, pose);
+    for (const list of anchors.values()) for (const a of list) send(socket, a);
 
     socket.on("message", (raw: Buffer, isBinary: boolean) => {
       if (isBinary) return; // binary frames handled in a later milestone
@@ -102,6 +106,19 @@ app.register(async (f) => {
           const pose: PoseBroadcastMsg = { ...msg, type: "pose" };
           latestPose.set(msg.sessionId, pose);
           broadcast(pose, "viewer");
+          break;
+        }
+        case "anchor": {
+          const list = anchors.get(msg.sessionId) ?? [];
+          list.push(msg);
+          anchors.set(msg.sessionId, list);
+          broadcast(msg, "viewer");
+          break;
+        }
+        case "anchor_clear": {
+          anchors.delete(msg.sessionId);
+          const clear: AnchorClearMsg = { type: "anchor_clear", sessionId: msg.sessionId };
+          broadcast(clear, "viewer");
           break;
         }
         case "scan_frame":

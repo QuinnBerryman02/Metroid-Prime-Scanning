@@ -113,6 +113,22 @@ export interface PoseMsg {
   tracking: "tracked" | "lost";
 }
 
+/** Device -> server -> viewer: a world-anchored box placed by the user. */
+export interface AnchorMsg {
+  type: "anchor";
+  sessionId: string;
+  id: string;
+  position: Vec3;
+  quaternion: Quat;
+  size: Vec3;
+}
+
+/** Device -> server -> viewer: remove all anchors for a session. */
+export interface AnchorClearMsg {
+  type: "anchor_clear";
+  sessionId: string;
+}
+
 // ---------------------------------------------------------------------------
 // Server -> Client
 // ---------------------------------------------------------------------------
@@ -147,11 +163,19 @@ export interface ErrorMsg {
   message: string;
 }
 
-export type ClientToServer = ScanFrameMsg | RescanMsg | HelloMsg | PoseMsg;
+export type ClientToServer =
+  | ScanFrameMsg
+  | RescanMsg
+  | HelloMsg
+  | PoseMsg
+  | AnchorMsg
+  | AnchorClearMsg;
 export type ServerToClient =
   | WorldDeltaMsg
   | ScanResultMsg
   | PoseBroadcastMsg
+  | AnchorMsg
+  | AnchorClearMsg
   | SessionEventMsg
   | ErrorMsg;
 

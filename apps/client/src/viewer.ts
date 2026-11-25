@@ -94,10 +94,18 @@ phone.isVisible = false;
 let lastSeen = 0;
 let poseCount = 0;
 
+// Anchored boxes streamed from the phone.
+const anchorMat = new StandardMaterial("anchorMat", scene);
+anchorMat.emissiveColor = new Color3(0.2, 0.7, 1);
+anchorMat.alpha = 0.85;
+anchorMat.disableLighting = true;
+const anchorMeshes = new Map<string, ReturnType<typeof MeshBuilder.CreateBox>>();
+
 const gateway = new GatewayClient("viewer", sessionId, {
   onStatus: (s) => {
     log(`ws ${s}`);
     if (s === "open") statusEl.textContent = "connected · waiting for device…";
+    if (s === "open") log("viewer connected");
     if (s === "closed") statusEl.textContent = "disconnected";
   },
   onPose: (msg) => {
@@ -115,6 +123,26 @@ const gateway = new GatewayClient("viewer", sessionId, {
   },
   onSession: (msg) => log(`session ${msg.status}: ${msg.sessionId}`),
   onWorld: (msg) => log(`world: ${msg.added.length} objects`),
+  onAnchor: (msg) => {
+    const [sx, sy, sz] = msg.size;
+    let mesh = anchorMeshes.get(msg.id);
+    if (!mesh) {
+      mesh = MeshBuilder.CreateBox(msg.id, { width: sx, height: sy, depth: sz }, scene);
+      mesh.material = anchorMat;
+      anchorMeshes.set(msg.id, mesh);
+      log(`anchor +${msg.id}`);
+    }
+    mesh.position.set(...msg.position);
+    if (!mesh.rotationQuaternion) mesh.rotationQuaternion = Quaternion.Identity();
+    mesh.rotationQuaternion.set(...msg.quaternion);
+  },
+  onAnchorClear: (msg) => {
+    if (msg.sessionId) {
+      for (const m of anchorMeshes.values()) m.dispose();
+      anchorMeshes.clear();
+      log("anchors cleared");
+    }
+  },
 });
 gateway.connect();
 
@@ -127,7 +155,8 @@ setInterval(() => {
     const p = phone.position;
     statusEl.textContent =
       `tracking · ${poseCount} poses\n` +
-      `pos ${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}`;
+      `pos ${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}\n` +
+      `${anchorMeshes.size} anchor(s)`;
   }
 }, 250);
 

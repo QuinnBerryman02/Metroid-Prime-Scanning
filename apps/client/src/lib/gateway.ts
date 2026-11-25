@@ -19,6 +19,10 @@ export interface GatewayHandlers {
   onSession?: (
     msg: Extract<ServerToClient, { type: "session_event" }>,
   ) => void;
+  onAnchor?: (msg: Extract<ServerToClient, { type: "anchor" }>) => void;
+  onAnchorClear?: (
+    msg: Extract<ServerToClient, { type: "anchor_clear" }>,
+  ) => void;
   onStatus?: (status: GatewayStatus, detail?: string) => void;
 }
 
@@ -62,6 +66,8 @@ export class GatewayClient {
       if (msg.type === "pose") this.handlers.onPose?.(msg);
       else if (msg.type === "world_delta") this.handlers.onWorld?.(msg);
       else if (msg.type === "session_event") this.handlers.onSession?.(msg);
+      else if (msg.type === "anchor") this.handlers.onAnchor?.(msg);
+      else if (msg.type === "anchor_clear") this.handlers.onAnchorClear?.(msg);
     };
   }
 
@@ -88,6 +94,19 @@ export class GatewayClient {
   private flushPose() {
     if (!this.latestPose) return;
     this.send({ type: "pose", sessionId: this.sessionId, ...this.latestPose });
+  }
+
+  sendAnchor(
+    id: string,
+    position: Vec3,
+    quaternion: Quat,
+    size: Vec3,
+  ) {
+    this.send({ type: "anchor", sessionId: this.sessionId, id, position, quaternion, size });
+  }
+
+  sendAnchorClear() {
+    this.send({ type: "anchor_clear", sessionId: this.sessionId });
   }
 
   close() {
