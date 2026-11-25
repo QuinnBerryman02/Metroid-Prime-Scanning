@@ -1,19 +1,15 @@
 /**
  * WebXR capability / depth-sensing diagnostic.
  *
- * Manual test page (reachable at /capabilities.html). Run it on the phone over
- * HTTPS and it will:
- *   1. report secure-context + WebXR basics,
- *   2. request an `immersive-ar` session with every feature we care about as
- *      optional, then report which ones the runtime actually enabled
- *      (`session.enabledFeatures`),
- *   3. enter a minimal WebGL AR loop that live-reports hit-test results and
- *      depth-sensing data (dimensions, usage, and a depth preview).
+ * Manual test page (reachable at /capabilities.html). See README.
  *
- * The report is POSTed to `/__diag/report`, which the Vite dev server (see
- * vite.config.ts) writes to `apps/client/reports/`. No manual copying needed.
+ * It requests an `immersive-ar` session with every feature we care about as
+ * optional, reports which the runtime granted, then runs a minimal WebGL AR
+ * loop that live-reports hit-test results and (if present) depth data.
  *
- * No Babylon dependency on purpose - this must run even if the app code breaks.
+ * The report is POSTed to `/__diag/report`, which the Vite dev server writes to
+ * `apps/client/reports/`. Global error handlers capture any exception so a
+ * failed run still produces a useful report.
  */
 
 const FEATURES = [
@@ -51,6 +47,8 @@ interface ReportData {
   enabledFeatures: string[] | null;
   session: Record<string, string | null>;
   depth: DepthInfo;
+  live: Record<string, number | boolean | null>;
+  errors: string[];
   log: string[];
 }
 
@@ -59,11 +57,14 @@ interface ReportData {
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
 const runBtn = $<HTMLButtonElement>("runBtn");
+const panelSendBtn = $<HTMLButtonElement>("panelSendBtn");
 const arSendBtn = $<HTMLButtonElement>("arSendBtn");
 const arExitBtn = $<HTMLButtonElement>("arExitBtn");
+const sendStatus = $("sendStatus");
 const envEl = $("env");
 const featuresEl = $("features");
 const sessionEl = $("session");
+const errorsEl = $("errors");
 const logEl = $("log");
 const arFeaturesEl = $("arFeatures");
 const arLiveEl = $("arLive");
@@ -81,8 +82,26 @@ const report: ReportData = {
   enabledFeatures: null,
   session: {},
   depth: { active: false },
+  live: {},
+  errors: [],
   log: [],
 };
+
+function recordError(msg: string) {
+  report.errors.push(msg);
+  errorsEl.innerHTML = report.errors
+    .map((e) => `<div class="row"><span class="no">${e}</span></div>`)
+    .join("");
+  log(`ERROR: ${msg}`);
+}
+
+// Capture everything, including async rejections from the XR loop.
+window.addEventListener("error", (e) =>
+  recordError(`${e.message} @ ${e.filename}:${e.lineno}`),
+);
+window.addEventListener("unhandledrejection", (e) =>
+  recordError(`unhandledrejection: ${String(e.reason)}`),
+);
 
 function row(name: string, value: string, cls = ""): string {
   return `<div class="row"><span class="name">${name}</span><span class="${cls}">${value}</span></div>`;
@@ -95,9 +114,6 @@ function log(msg: string) {
 }
 function setArLive(msg: string) {
   arLiveEl.textContent = msg;
-}
-function renderFeatureRows(html: string) {
-  arFeaturesEl.innerHTML = html;
 }
 
 // --- capability probing -----------------------------------------------------
@@ -140,8 +156,10 @@ async function startSessionTest() {
   const xrSystem = (navigator as Navigator & { xr: XRSystem }).xr;
   runBtn.disabled = true;
   featuresEl.innerHTML = "";
-  renderFeatureRows('<div class="feat">requesting&hellip;</div>');
   report.timestamp = new Date().toISOString();
+  report.errors = [];
+  report.log = [];
+  log("requesting immersive-ar session…");
 
   try {
     session = await xrSystem.requestSession("immersive-ar", {
@@ -152,68 +170,66 @@ async function startSessionTest() {
   } catch (e) {
     log(`requestSession failed: ${String(e)}`);
     featuresEl.innerHTML = row("session", `FAILED: ${String(e)}`, "no");
-    renderFeatureRows(`<div class="feat no">session failed</div>`);
     runBtn.disabled = false;
     return;
   }
 
-  log(`session started (blend=${session.environmentBlendMode})`);
-  document.body.classList.add("in-ar");
+  const s = session;
+  try {
+    log(`session started (blend=${s.environmentBlendMode})`);
+    document.body.classList.add("in-ar");
 
-  const enabled = (session as XRSession & { enabledFeatures?: string[] })
-    .enabledFeatures;
-  report.enabledFeatures = enabled ?? null;
-  const enabledSet = new Set(enabled ?? []);
+    const enabled =
+      (s as XRSession & { enabledFeatures?: string[] }).enabledFeatures ?? null;
+    report.enabledFeatures = enabled;
+    log(`enabledFeatures = ${JSON.stringify(enabled)}`);
+    renderFeatureTable(enabled);
 
-  const featureRows = FEATURES.map((f) => {
-    if (f === "hit-test") {
-      return row(f, "required (granted)", "yes");
-    }
-    if (!enabled) {
-      return row(f, "unknown (no enabledFeatures)", "warn");
-    }
-    return enabledSet.has(f) ? row(f, "enabled", "yes") : row(f, "unavailable", "no");
-  }).join("");
-  featuresEl.innerHTML = featureRows;
+    report.session = {
+      interactionMode: s.interactionMode ?? null,
+      environmentBlendMode: s.environmentBlendMode ?? null,
+      depthUsage: (s as XRSession & { depthUsage?: string }).depthUsage ?? null,
+      depthDataFormat:
+        (s as XRSession & { depthDataFormat?: string }).depthDataFormat ?? null,
+    };
+    log(`session meta = ${JSON.stringify(report.session)}`);
 
-  renderFeatureRows(
-    FEATURES.map((f) => {
-      if (f === "hit-test") return `<div class="feat"><span class="name">${f}</span><span class="yes">yes</span></div>`;
-      if (!enabled) return `<div class="feat"><span class="name">${f}</span><span class="warn">?</span></div>`;
-      return enabledSet.has(f)
-        ? `<div class="feat"><span class="name">${f}</span><span class="yes">yes</span></div>`
-        : `<div class="feat"><span class="name">${f}</span><span class="no">no</span></div>`;
-    }).join(""),
-  );
+    s.addEventListener("end", () => {
+      document.body.classList.remove("in-ar");
+      runBtn.disabled = false;
+      session = null;
+      log("session ended");
+      void sendReport(); // auto-send on exit so nothing is lost
+    });
 
-  const s = session as XRSession & { depthUsage?: string; depthDataFormat?: string };
-  report.session = {
-    interactionMode: s.interactionMode ?? null,
-    environmentBlendMode: s.environmentBlendMode ?? null,
-    depthUsage: s.depthUsage ?? null,
-    depthDataFormat: s.depthDataFormat ?? null,
-  };
-  sessionEl.innerHTML =
-    row("interaction mode", s.interactionMode ?? "n/a") +
-    row("environment blend", s.environmentBlendMode ?? "n/a") +
-    row("depth usage", s.depthUsage ?? "n/a", s.depthUsage ? "yes" : "no") +
-    row("depth data format", s.depthDataFormat ?? "n/a", s.depthDataFormat ? "yes" : "no");
-  log(
-    `interaction=${s.interactionMode} blend=${s.environmentBlendMode} ` +
-      `depthUsage=${s.depthUsage ?? "-"} depthFormat=${s.depthDataFormat ?? "-"}`,
-  );
-
-  session.addEventListener("end", () => {
-    document.body.classList.remove("in-ar");
+    await runArLoop(s);
+  } catch (e) {
+    recordError(
+      `startSessionTest: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`,
+    );
     runBtn.disabled = false;
-    session = null;
-    log("session ended");
-  });
+  }
+}
 
-  await runArLoop(session);
+function renderFeatureTable(enabled: string[] | null) {
+  const enabledSet = new Set(enabled ?? []);
+  const cls = (f: (typeof FEATURES)[number]) =>
+    f === "hit-test" ? "yes" : !enabled ? "warn" : enabledSet.has(f) ? "yes" : "no";
+  const label = (f: (typeof FEATURES)[number]) =>
+    f === "hit-test" ? "yes (required)" : !enabled ? "?" : enabledSet.has(f) ? "yes" : "no";
+
+  featuresEl.innerHTML = FEATURES.map((f) =>
+    row(f, enabledSet.has(f) || f === "hit-test" ? "enabled" : enabled ? "unavailable" : "unknown", cls(f)),
+  ).join("");
+
+  arFeaturesEl.innerHTML = FEATURES.map(
+    (f) =>
+      `<div class="feat"><span class="name">${f}</span><span class="${cls(f)}">${label(f)}</span></div>`,
+  ).join("");
 }
 
 async function runArLoop(s: XRSession) {
+  log("runArLoop: creating WebGL context");
   const canvas = document.createElement("canvas");
   const gl = canvas.getContext("webgl2", {
     xrCompatible: true,
@@ -221,10 +237,11 @@ async function runArLoop(s: XRSession) {
     antialias: true,
   });
   if (!gl) {
-    log("webgl2 unavailable");
+    recordError("webgl2 unavailable - cannot start render loop");
     return;
   }
   await gl.makeXRCompatible();
+  log("runArLoop: webgl compatible");
 
   const layer = new XRWebGLLayer(s, gl);
   s.updateRenderState({ baseLayer: layer, depthNear: 0.1, depthFar: 100 });
@@ -232,8 +249,9 @@ async function runArLoop(s: XRSession) {
   let refSpace: XRReferenceSpace;
   try {
     refSpace = (await s.requestReferenceSpace("local")) as XRReferenceSpace;
+    log("runArLoop: local reference space ok");
   } catch (e) {
-    log(`requestReferenceSpace failed: ${String(e)}`);
+    recordError(`requestReferenceSpace failed: ${String(e)}`);
     return;
   }
 
@@ -242,128 +260,72 @@ async function runArLoop(s: XRSession) {
   if (requestHitTest) {
     try {
       hitTestSource = (await requestHitTest({ space: refSpace })) ?? null;
-      log("hit-test source acquired");
+      log(`runArLoop: hit-test source ${hitTestSource ? "acquired" : "null"}`);
     } catch (e) {
-      log(`requestHitTestSource failed: ${String(e)}`);
+      recordError(`requestHitTestSource failed: ${String(e)}`);
     }
   } else {
-    log("requestHitTestSource not available on this session");
+    recordError("requestHitTestSource not available on this session");
   }
 
-  let lastDepthDraw = 0;
-  let depthReported = false;
   let frames = 0;
-  let debuggedViews = false;
+  let nullPoses = 0;
+  let loopErrors = 0;
 
   const onFrame: XRFrameRequestCallback = (time, frame) => {
     s.requestAnimationFrame(onFrame);
-    frames++;
+    try {
+      frames++;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
-    gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
-    const pose = frame.getViewerPose(refSpace);
-    if (!pose) return;
-
-    if (!debuggedViews) {
-      debuggedViews = true;
-      log(`viewer pose ok, ${pose.views.length} view(s)`);
-    }
-
-    // --- hit test ---
-    let hits = 0;
-    if (hitTestSource) {
-      hits = frame.getHitTestResults(hitTestSource).length;
-    }
-    reticleEl.classList.toggle("hit", hits > 0);
-    reticleLabel.textContent = hits > 0 ? "SURFACE" : "";
-
-    // --- depth ---
-    let depthText = "depth: not exposed on this device";
-    for (const view of pose.views) {
-      const depth = frame.getDepthInformation?.(view) as XRDepthInformation | null;
-      if (!depth) continue;
-      const cpu = depth as unknown as {
-        getDepthInMeters?: (x: number, y: number) => number;
-      };
-      let centre: number | undefined;
-      if (typeof cpu.getDepthInMeters === "function") {
-        try {
-          centre = cpu.getDepthInMeters(depth.width / 2, depth.height / 2);
-        } catch {
-          /* out of range */
-        }
+      const pose = frame.getViewerPose(refSpace);
+      if (!pose) {
+        nullPoses++;
+        report.live = { frames, nullPoses };
+        setArLive(`frame ${frames}\nviewer pose: null (${nullPoses})`);
+        return;
       }
-      report.depth = {
-        active: true,
-        width: depth.width,
-        height: depth.height,
-        usage: report.session.depthUsage ?? undefined,
-        format: report.session.depthDataFormat ?? undefined,
-        centreMeters: centre,
-      };
-      depthWrap.classList.remove("off");
-      depthText =
-        `depth: ${depth.width}x${depth.height}` +
-        (centre !== undefined ? ` centre=${centre.toFixed(2)}m` : "");
-      if (!depthReported) {
-        depthReported = true;
-        log(`depth-sensing ACTIVE: ${depth.width}x${depth.height}`);
-      }
-      if (time - lastDepthDraw > 250 && cpu.getDepthInMeters) {
-        lastDepthDraw = time;
-        drawDepthPreview(cpu.getDepthInMeters.bind(depth), depth.width, depth.height);
+
+      let hits = 0;
+      if (hitTestSource) hits = frame.getHitTestResults(hitTestSource).length;
+      reticleEl.classList.toggle("hit", hits > 0);
+      reticleLabel.textContent = hits > 0 ? "SURFACE" : "";
+
+      report.live = { frames, nullPoses, views: pose.views.length, hits };
+      report.depth = report.depth.active ? report.depth : { active: false };
+      setArLive(
+        `frame ${frames}\nviews ${pose.views.length}\n` +
+          `hit-test ${hits ? `LOCK (${hits})` : "searching"}\n` +
+          `depth: unavailable on this device`,
+      );
+
+      if (frames === 1) log("render loop frame 1 ✓");
+    } catch (e) {
+      loopErrors++;
+      if (loopErrors <= 3) {
+        recordError(
+          `onFrame: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`,
+        );
       }
     }
-
-    setArLive(
-      `frame ${frames}  views ${pose.views.length}\n` +
-        `hit-test ${hits ? `LOCK (${hits})` : "searching"}\n` +
-        depthText,
-    );
   };
 
   s.requestAnimationFrame(onFrame);
-  log("render loop running");
-}
-
-function drawDepthPreview(
-  sample: (x: number, y: number) => number,
-  srcW: number,
-  srcH: number,
-) {
-  const ctx = depthCanvas.getContext("2d");
-  if (!ctx) return;
-  const w = depthCanvas.width;
-  const h = depthCanvas.height;
-  // Canvas is a fixed preview size; scale samples from the raw depth extent.
-  const img = ctx.createImageData(srcW, srcH);
-  for (let y = 0; y < srcH; y++) {
-    for (let x = 0; x < srcW; x++) {
-      let m = NaN;
-      try {
-        m = sample(x, y);
-      } catch {
-        /* ignore */
-      }
-      const v = Number.isFinite(m) ? Math.max(0, Math.min(1, 1 - m / 5)) : 0;
-      const i = (y * srcW + x) * 4;
-      img.data[i] = img.data[i + 1] = img.data[i + 2] = v * 255;
-      img.data[i + 3] = 255;
-    }
-  }
-  const tmp = document.createElement("canvas");
-  tmp.width = srcW;
-  tmp.height = srcH;
-  tmp.getContext("2d")!.putImageData(img, 0, 0);
-  ctx.drawImage(tmp, 0, 0, w, h);
+  log("runArLoop: render loop scheduled");
 }
 
 // --- sending the report -----------------------------------------------------
 
-async function sendReport(): Promise<boolean> {
+async function sendReport(currentSession = true): Promise<boolean> {
   report.timestamp = new Date().toISOString();
+  if (currentSession && session) {
+    const l = report.live as Record<string, unknown>;
+    if (typeof l.frames === "number") {
+      report.log.push(`[send] live at send: ${JSON.stringify(l)}`);
+    }
+  }
   const text = JSON.stringify(report, null, 2);
   try {
     const res = await fetch(REPORT_URL, {
@@ -374,17 +336,17 @@ async function sendReport(): Promise<boolean> {
     const result = (await res.json()) as { ok: boolean; saved?: string; error?: string };
     if (!res.ok || !result.ok) throw new Error(result.error ?? `HTTP ${res.status}`);
     log(`report saved: ${result.saved}`);
-    setArLive(`${arLiveEl.textContent}\n\n✔ report saved to\n${result.saved}`);
+    sendStatus.textContent = `Saved to apps/client/${result.saved}`;
+    setArLive(`${arLiveEl.textContent}\n\n✔ report saved`);
     arSendBtn.textContent = "Sent ✔";
     return true;
   } catch (e) {
-    log(`send failed: ${String(e)}`);
-    // Fallback so the report is not lost if the dev-server sink is unavailable.
+    recordError(`send failed: ${String(e)}`);
     try {
       await navigator.clipboard.writeText(text);
-      arSendBtn.textContent = "Copied (send failed)";
+      sendStatus.textContent = "Send failed - copied to clipboard instead.";
     } catch {
-      arSendBtn.textContent = "Send failed";
+      sendStatus.textContent = "Send failed and clipboard unavailable.";
     }
     return false;
   }
@@ -393,6 +355,7 @@ async function sendReport(): Promise<boolean> {
 // --- wiring -----------------------------------------------------------------
 
 async function init() {
+  panelSendBtn.addEventListener("click", () => void sendReport());
   arSendBtn.addEventListener("click", () => void sendReport());
   arExitBtn.addEventListener("click", () => void session?.end());
   runBtn.addEventListener("click", () => void startSessionTest());
