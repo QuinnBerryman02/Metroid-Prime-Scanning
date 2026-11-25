@@ -21,7 +21,7 @@ export function installDebugOverlay(target?: HTMLElement | null) {
     Object.assign(el.style, {
       position: "fixed",
       left: "8px",
-      bottom: "8px",
+      bottom: "84px",
       right: "8px",
       maxHeight: "28vh",
       overflow: "auto",
