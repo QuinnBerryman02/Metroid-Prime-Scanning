@@ -30,6 +30,7 @@ Point the phone at your environment, scan objects, and the system:
 - **MS0** repo & tooling - done
 - **MS1** WebXR AR skeleton + pose/anchor relay - done (hit-test reticle, WebXR anchors,
   device pose + placed anchors -> gateway -> viewer)
+- **MS2** model exploration - done (`services/inference/notebooks/`, all models verified on CPU)
 - **MS2** detection + segmentation service - next
 
 Verify the pose relay without a phone:

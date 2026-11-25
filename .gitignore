@@ -36,6 +36,10 @@ data/
 captures/
 scans/
 reports/
+samples/
+
+# notebooks
+.ipynb_checkpoints/
 
 # os / editor
 .DS_Store

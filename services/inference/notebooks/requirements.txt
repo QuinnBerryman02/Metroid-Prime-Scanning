@@ -1,0 +1,22 @@
+# Exploration environment (PyTorch-based) for the notebooks.
+# For the deployed service (OpenVINO) use ../requirements.txt instead.
+
+# Core DL
+torch>=2.2
+torchvision>=0.17
+
+# Detection / segmentation (YOLO11, FastSAM, MobileSAM)
+ultralytics>=8.3
+
+# Depth Anything V2 + CLIP + Florence-2
+transformers>=4.44
+accelerate>=0.34
+safetensors
+
+# Notebook + plotting
+jupyterlab
+ipykernel
+matplotlib
+pillow
+numpy
+opencv-python
