@@ -1,0 +1,22 @@
+{
+  "name": "metroid-scan",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Metroid Prime style environment scanning: phone -> image segmentation/CV -> 3D reconstruction -> AR HUD + desktop viewer",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace apps/server & npm run dev --workspace apps/client",
+    "dev:server": "npm run dev --workspace apps/server",
+    "dev:client": "npm run dev --workspace apps/client",
+    "dev:inference": "cd services/inference && uvicorn app.main:app --reload --port 8000",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,147 @@
+/**
+ * Shared wire protocol + world-model types.
+ * Kept runtime-agnostic (no DOM / no Node globals) so it can be imported by
+ * the Bun/Node gateway, the browser client and tooling.
+ */
+
+export type Vec3 = [number, number, number];
+export type Quat = [number, number, number, number];
+/** Column-major 4x4, matching WebXR / glMatrix conventions. */
+export type Mat4 = [
+  number, number, number, number,
+  number, number, number, number,
+  number, number, number, number,
+  number, number, number, number,
+];
+
+export interface Intrinsics {
+  fx: number;
+  fy: number;
+  cx: number;
+  cy: number;
+  width: number;
+  height: number;
+}
+
+/** A 2D detection returned by the inference service. */
+export interface Detection {
+  /** COCO-ish or open-vocab label id. */
+  classId: number;
+  label: string;
+  score: number;
+  /** [x, y, w, h] in pixels of the submitted (downscaled) image. */
+  box: [number, number, number, number];
+  /** Optional per-pixel mask, RLE or base64-PNG, in the same image space. */
+  mask?: { encoding: "rle" | "png"; data: string };
+}
+
+/** Classification / explanation attached to a scanned object. */
+export interface Classification {
+  label: string;
+  confidence: number;
+  /** Longer VLM caption / explanation. */
+  description?: string;
+  tags?: string[];
+}
+
+/** An object that has been scanned and anchored in the world. */
+export interface WorldObject {
+  id: string;
+  classification: Classification;
+  color: string;
+
+  /** World-space oriented bounding box (the "scan border"). */
+  center: Vec3;
+  size: Vec3;
+  quaternion: Quat;
+
+  /** Optional object point cloud (x,y,z triples, world space). */
+  hull?: number[];
+
+  /** Original 2D box in the keyframe, for HUD appearance matching. */
+  sourceBox?: [number, number, number, number];
+  /** WebXR anchor uuid on the scanning device, if any. */
+  anchorUuid?: string;
+
+  firstSeen: number;
+  lastSeen: number;
+  scanCount: number;
+}
+
+// ---------------------------------------------------------------------------
+// Client -> Server
+// ---------------------------------------------------------------------------
+
+export interface ScanFrameMsg {
+  type: "scan_frame";
+  frameId: string;
+  sessionId: string;
+  /** worldFromCamera at capture time. */
+  pose: Mat4;
+  intrinsics: Intrinsics;
+  /** Frames are sent as a separate binary WS message keyed by frameId. */
+  jpegBytes: number;
+  depthBytes?: number;
+  /** Screen-centre in normalised image coords, if the user is aiming. */
+  aim?: [number, number];
+}
+
+export interface RescanMsg {
+  type: "rescan";
+  sessionId: string;
+  objectId: string;
+  frameId: string;
+  jpegBytes: number;
+}
+
+export interface HelloMsg {
+  type: "hello";
+  sessionId: string;
+  role: "device" | "viewer";
+}
+
+// ---------------------------------------------------------------------------
+// Server -> Client
+// ---------------------------------------------------------------------------
+
+export interface WorldDeltaMsg {
+  type: "world_delta";
+  added: WorldObject[];
+  updated: WorldObject[];
+  removed: string[];
+}
+
+export interface ScanResultMsg {
+  type: "scan_result";
+  frameId: string;
+  objects: WorldObject[];
+}
+
+export interface ErrorMsg {
+  type: "error";
+  message: string;
+}
+
+export type ClientToServer = ScanFrameMsg | RescanMsg | HelloMsg;
+export type ServerToClient =
+  | WorldDeltaMsg
+  | ScanResultMsg
+  | ErrorMsg;
+
+/** Per-class display colours (Metroid-ish palette). */
+export const CLASS_COLORS: Record<string, string> = {
+  person: "#ff5252",
+  chair: "#ffb74d",
+  table: "#4db6ac",
+  laptop: "#4fc3f7",
+  cup: "#ba68c8",
+  bottle: "#81c784",
+  book: "#f06292",
+  keyboard: "#ffd54f",
+  monitor: "#90a4ae",
+  default: "#7cf7c4",
+};
+
+export function colorForLabel(label: string): string {
+  return CLASS_COLORS[label] ?? CLASS_COLORS.default;
+}

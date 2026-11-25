@@ -1,0 +1,44 @@
+# deps
+node_modules/
+.pnpm-store/
+
+# builds
+dist/
+build/
+*.tsbuildinfo
+.vite/
+
+# env
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# models / weights (large binaries - fetch via script instead)
+models/
+*.onnx
+*.pt
+*.pth
+*.bin
+*.gguf
+*.safetensors
+
+# captures / datasets
+data/
+captures/
+scans/
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
