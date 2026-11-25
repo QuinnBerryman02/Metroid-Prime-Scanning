@@ -17,8 +17,7 @@
       h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em;
         color: #8aa0a8; margin: 22px 0 8px; }
       button { font: inherit; padding: 14px 18px; width: 100%; border-radius: 10px;
-        border: 1px solid #2b4149; background: #12242b; color: #eaf6f3;
-        margin: 6px 0; }
+        border: 1px solid #2b4149; background: #12242b; color: #eaf6f3; margin: 6px 0; }
       button:active { background: #1c3945; }
       button.primary { background: #0e3a2f; border-color: #1e7a5f; }
       .row { display: flex; justify-content: space-between; gap: 12px;
@@ -28,20 +27,45 @@
       #log { white-space: pre-wrap; background: #0b1418; border: 1px solid #14242b;
         border-radius: 8px; padding: 10px; max-height: 240px; overflow: auto;
         font-size: 12px; color: #9fb4bb; }
-      #overlay { position: fixed; inset: 0; display: none; pointer-events: none; }
+      #sendStatus { min-height: 20px; font-size: 12px; color: var(--ok); padding: 4px 2px; }
+
+      /* ---- in-AR overlay (rendered over the camera passthrough) ---- */
+      #overlay { position: fixed; inset: 0; display: none; pointer-events: none;
+        font: 12px/1.35 ui-monospace, Menlo, monospace; }
       body.in-ar #panel { display: none; }
       body.in-ar #overlay { display: block; }
-      #reticle { position: absolute; left: 50%; top: 50%; width: 40px; height: 40px;
-        margin: -20px 0 0 -20px; border: 2px solid #7cf7c4; border-radius: 50%;
-        transition: transform .1s, border-color .1s; }
-      #reticle.hit { border-color: #ffd54f; transform: scale(.7); }
-      #hud { position: absolute; left: 8px; top: 8px; right: 8px; padding: 8px 10px;
-        background: rgba(0,0,0,.55); border-radius: 8px; font-size: 12px; color: #cfe;
-        white-space: pre-wrap; }
-      #depthPreview { position: absolute; right: 8px; bottom: 8px; width: 120px;
-        image-rendering: pixelated; border: 1px solid #7cf7c4; border-radius: 6px; }
-      #exitBtn { position: absolute; left: 8px; bottom: 8px; width: auto;
-        pointer-events: auto; padding: 10px 16px; }
+
+      #arPanel { position: absolute; left: 10px; top: 10px; width: min(78vw, 340px);
+        max-height: 62vh; overflow: auto; padding: 10px 12px; border-radius: 12px;
+        background: rgba(4, 12, 15, 0.82); border: 1px solid #1e7a5f; color: #d7e2e6;
+        pointer-events: auto; }
+      #arPanel .title { color: var(--ok); letter-spacing: .12em; font-weight: 700;
+        margin-bottom: 8px; }
+      #arPanel .feat { display: flex; justify-content: space-between; gap: 10px;
+        padding: 2px 0; }
+      #arPanel .feat .name { color: #9fb4bb; }
+      #arLive { margin-top: 8px; padding-top: 8px; border-top: 1px solid #16323a;
+        white-space: pre-wrap; color: #cfe; }
+      .ar-actions { display: flex; gap: 8px; margin-top: 10px; }
+      .ar-actions button { padding: 10px 12px; margin: 0; }
+      .hint { margin-top: 8px; color: #7f959c; font-size: 11px; }
+
+      #reticle { position: absolute; left: 50%; top: 50%; width: 46px; height: 46px;
+        margin: -23px 0 0 -23px; border: 2px solid rgba(124, 247, 196, .85);
+        border-radius: 50%; transition: transform .08s, border-color .08s; }
+      #reticle::after { content: ""; position: absolute; left: 50%; top: 50%;
+        width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%;
+        background: #7cf7c4; }
+      #reticle.hit { border-color: #ffd54f; transform: scale(.65); }
+      #reticle.hit::after { background: #ffd54f; }
+      #reticleLabel { position: absolute; left: 50%; top: calc(50% + 34px);
+        transform: translateX(-50%); color: #ffd54f; text-shadow: 0 0 6px #000; }
+
+      #depthWrap { position: absolute; right: 10px; bottom: 10px; text-align: center; }
+      #depthWrap .cap { color: #7cf7c4; display: block; margin-bottom: 2px; }
+      #depthPreview { width: 120px; image-rendering: pixelated; border: 1px solid #7cf7c4;
+        border-radius: 6px; background: #000; }
+      #depthWrap.off { opacity: .35; }
     </style>
   </head>
   <body>
@@ -50,7 +74,6 @@
       <p style="color:#8aa0a8">Open this page over <b>HTTPS</b> on the phone and press
         the button. It requests an AR session and probes each optional feature.</p>
       <button id="runBtn" class="primary" disabled>Checking support&hellip;</button>
-      <button id="copyBtn">Copy report</button>
 
       <h2>Environment</h2>
       <div id="env"></div>
@@ -67,10 +90,21 @@
 
     <!-- DOM overlay shown on top of the camera passthrough once in AR -->
     <div id="overlay">
-      <div id="hud">live</div>
-      <div id="reticle"></div>
-      <canvas id="depthPreview" width="96" height="72"></canvas>
-      <button id="exitBtn">End session</button>
+      <div id="arPanel">
+        <div class="title">SCAN CAPABILITIES</div>
+        <div id="arFeatures"></div>
+        <div id="arLive">starting session&hellip;</div>
+        <div class="ar-actions">
+          <button id="arSendBtn" class="primary">Send report</button>
+          <button id="arExitBtn">End</button>
+        </div>
+        <div class="hint">Move the phone slowly to catch a hit-test surface.</div>
+      </div>
+      <div id="reticle"><div id="reticleLabel"></div></div>
+      <div id="depthWrap" class="off">
+        <span class="cap">DEPTH</span>
+        <canvas id="depthPreview" width="96" height="72"></canvas>
+      </div>
     </div>
 
     <script type="module" src="/src/capabilities.ts"></script>

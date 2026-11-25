@@ -10,6 +10,9 @@
  *   3. enter a minimal WebGL AR loop that live-reports hit-test results and
  *      depth-sensing data (dimensions, usage, and a depth preview).
  *
+ * The report is POSTed to `/__diag/report`, which the Vite dev server (see
+ * vite.config.ts) writes to `apps/client/reports/`. No manual copying needed.
+ *
  * No Babylon dependency on purpose - this must run even if the app code breaks.
  */
 
@@ -28,48 +31,73 @@ const FEATURES = [
   "unbounded",
 ] as const;
 
-type FeatureName = (typeof FEATURES)[number];
+const REPORT_URL = "/__diag/report";
+
+interface DepthInfo {
+  active: boolean;
+  width?: number;
+  height?: number;
+  usage?: string;
+  format?: string;
+  centreMeters?: number;
+}
+
+interface ReportData {
+  timestamp: string;
+  userAgent: string;
+  secureContext: boolean;
+  hasXR: boolean;
+  immersiveArSupported: boolean;
+  enabledFeatures: string[] | null;
+  session: Record<string, string | null>;
+  depth: DepthInfo;
+  log: string[];
+}
 
 // --- tiny DOM helpers -------------------------------------------------------
 
-const runBtn = document.getElementById("runBtn") as HTMLButtonElement;
-const copyBtn = document.getElementById("copyBtn") as HTMLButtonElement;
-const exitBtn = document.getElementById("exitBtn") as HTMLButtonElement;
-const envEl = document.getElementById("env")!;
-const featuresEl = document.getElementById("features")!;
-const sessionEl = document.getElementById("session")!;
-const logEl = document.getElementById("log")!;
-const hudEl = document.getElementById("hud")!;
-const reticleEl = document.getElementById("reticle")!;
-const depthCanvas = document.getElementById("depthPreview") as HTMLCanvasElement;
+const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+
+const runBtn = $<HTMLButtonElement>("runBtn");
+const arSendBtn = $<HTMLButtonElement>("arSendBtn");
+const arExitBtn = $<HTMLButtonElement>("arExitBtn");
+const envEl = $("env");
+const featuresEl = $("features");
+const sessionEl = $("session");
+const logEl = $("log");
+const arFeaturesEl = $("arFeatures");
+const arLiveEl = $("arLive");
+const reticleEl = $("reticle");
+const reticleLabel = $("reticleLabel");
+const depthWrap = $("depthWrap");
+const depthCanvas = $<HTMLCanvasElement>("depthPreview");
+
+const report: ReportData = {
+  timestamp: new Date().toISOString(),
+  userAgent: navigator.userAgent,
+  secureContext: false,
+  hasXR: false,
+  immersiveArSupported: false,
+  enabledFeatures: null,
+  session: {},
+  depth: { active: false },
+  log: [],
+};
 
 function row(name: string, value: string, cls = ""): string {
   return `<div class="row"><span class="name">${name}</span><span class="${cls}">${value}</span></div>`;
 }
-function setEnv(html: string) {
-  envEl.innerHTML = html;
-}
-function setSession(html: string) {
-  sessionEl.innerHTML = html;
-}
 function log(msg: string) {
   const t = new Date().toISOString().slice(11, 19);
-  logEl.textContent += `[${t}] ${msg}\n`;
+  report.log.push(`[${t}] ${msg}`);
+  logEl.textContent = report.log.join("\n");
   logEl.scrollTop = logEl.scrollHeight;
 }
-
-function copyReport() {
-  const report = [
-    envEl.textContent,
-    featuresEl.textContent,
-    sessionEl.textContent,
-    logEl.textContent,
-  ].join("\n");
-  navigator.clipboard?.writeText(report).then(
-    () => (copyBtn.textContent = "Copied!"),
-    () => (copyBtn.textContent = "Copy failed"),
-  );
-  setTimeout(() => (copyBtn.textContent = "Copy report"), 1500);
+function setArLive(msg: string) {
+  arLiveEl.textContent = msg;
+}
+function renderFeatureRows(html: string) {
+  arFeaturesEl.innerHTML = html;
 }
 
 // --- capability probing -----------------------------------------------------
@@ -77,6 +105,8 @@ function copyReport() {
 async function probeEnvironment(): Promise<boolean> {
   const xrSystem = (navigator as Navigator & { xr?: XRSystem }).xr;
   const secure = window.isSecureContext;
+  report.secureContext = secure;
+  report.hasXR = !!xrSystem;
 
   let arSupported = false;
   if (xrSystem) {
@@ -86,17 +116,17 @@ async function probeEnvironment(): Promise<boolean> {
       log(`isSessionSupported error: ${String(e)}`);
     }
   }
+  report.immersiveArSupported = arSupported;
 
-  setEnv(
+  envEl.innerHTML =
     row("secure context (https)", secure ? "yes" : "NO", secure ? "yes" : "no") +
-      row("navigator.xr", xrSystem ? "present" : "missing", xrSystem ? "yes" : "no") +
-      row(
-        "immersive-ar",
-        xrSystem ? (arSupported ? "supported" : "not supported") : "n/a",
-        arSupported ? "yes" : "no",
-      ) +
-      row("user agent", navigator.userAgent.slice(0, 60)),
-  );
+    row("navigator.xr", xrSystem ? "present" : "missing", xrSystem ? "yes" : "no") +
+    row(
+      "immersive-ar",
+      xrSystem ? (arSupported ? "supported" : "not supported") : "n/a",
+      arSupported ? "yes" : "no",
+    ) +
+    row("user agent", navigator.userAgent.slice(0, 60));
 
   log(`secure=${secure} xr=${!!xrSystem} immersive-ar=${arSupported}`);
   return secure && arSupported;
@@ -110,16 +140,19 @@ async function startSessionTest() {
   const xrSystem = (navigator as Navigator & { xr: XRSystem }).xr;
   runBtn.disabled = true;
   featuresEl.innerHTML = "";
+  renderFeatureRows('<div class="feat">requesting&hellip;</div>');
+  report.timestamp = new Date().toISOString();
 
   try {
     session = await xrSystem.requestSession("immersive-ar", {
       requiredFeatures: ["hit-test"],
       optionalFeatures: [...FEATURES],
-      domOverlay: { root: document.getElementById("overlay")! as HTMLElement },
+      domOverlay: { root: $("overlay") },
     });
   } catch (e) {
     log(`requestSession failed: ${String(e)}`);
     featuresEl.innerHTML = row("session", `FAILED: ${String(e)}`, "no");
+    renderFeatureRows(`<div class="feat no">session failed</div>`);
     runBtn.disabled = false;
     return;
   }
@@ -127,17 +160,48 @@ async function startSessionTest() {
   log(`session started (blend=${session.environmentBlendMode})`);
   document.body.classList.add("in-ar");
 
-  // `enabledFeatures` is the cleanest way to know what was actually granted.
   const enabled = (session as XRSession & { enabledFeatures?: string[] })
     .enabledFeatures;
+  report.enabledFeatures = enabled ?? null;
   const enabledSet = new Set(enabled ?? []);
-  featuresEl.innerHTML = FEATURES.map((f) => {
-    if (f === "hit-test") return row(f, "required (granted)", "yes");
-    if (!enabled) return row(f, "unknown (runtime has no enabledFeatures)", "warn");
+
+  const featureRows = FEATURES.map((f) => {
+    if (f === "hit-test") {
+      return row(f, "required (granted)", "yes");
+    }
+    if (!enabled) {
+      return row(f, "unknown (no enabledFeatures)", "warn");
+    }
     return enabledSet.has(f) ? row(f, "enabled", "yes") : row(f, "unavailable", "no");
   }).join("");
+  featuresEl.innerHTML = featureRows;
 
-  reportSessionDetails();
+  renderFeatureRows(
+    FEATURES.map((f) => {
+      if (f === "hit-test") return `<div class="feat"><span class="name">${f}</span><span class="yes">yes</span></div>`;
+      if (!enabled) return `<div class="feat"><span class="name">${f}</span><span class="warn">?</span></div>`;
+      return enabledSet.has(f)
+        ? `<div class="feat"><span class="name">${f}</span><span class="yes">yes</span></div>`
+        : `<div class="feat"><span class="name">${f}</span><span class="no">no</span></div>`;
+    }).join(""),
+  );
+
+  const s = session as XRSession & { depthUsage?: string; depthDataFormat?: string };
+  report.session = {
+    interactionMode: s.interactionMode ?? null,
+    environmentBlendMode: s.environmentBlendMode ?? null,
+    depthUsage: s.depthUsage ?? null,
+    depthDataFormat: s.depthDataFormat ?? null,
+  };
+  sessionEl.innerHTML =
+    row("interaction mode", s.interactionMode ?? "n/a") +
+    row("environment blend", s.environmentBlendMode ?? "n/a") +
+    row("depth usage", s.depthUsage ?? "n/a", s.depthUsage ? "yes" : "no") +
+    row("depth data format", s.depthDataFormat ?? "n/a", s.depthDataFormat ? "yes" : "no");
+  log(
+    `interaction=${s.interactionMode} blend=${s.environmentBlendMode} ` +
+      `depthUsage=${s.depthUsage ?? "-"} depthFormat=${s.depthDataFormat ?? "-"}`,
+  );
 
   session.addEventListener("end", () => {
     document.body.classList.remove("in-ar");
@@ -147,30 +211,6 @@ async function startSessionTest() {
   });
 
   await runArLoop(session);
-}
-
-function reportSessionDetails() {
-  if (!session) return;
-  const s = session as XRSession & {
-    depthUsage?: string;
-    depthDataFormat?: string;
-    preferredReflectionFormat?: string;
-  };
-  setSession(
-    row("interaction mode", s.interactionMode ?? "n/a") +
-      row("environment blend", s.environmentBlendMode ?? "n/a") +
-      row("depth usage", s.depthUsage ?? "n/a", s.depthUsage ? "yes" : "no") +
-      row(
-        "depth data format",
-        s.depthDataFormat ?? "n/a",
-        s.depthDataFormat ? "yes" : "no",
-      ) +
-      row("reflection format", s.preferredReflectionFormat ?? "n/a"),
-  );
-  log(
-    `interaction=${s.interactionMode} blend=${s.environmentBlendMode} ` +
-      `depthUsage=${s.depthUsage ?? "-"} depthFormat=${s.depthDataFormat ?? "-"}`,
-  );
 }
 
 async function runArLoop(s: XRSession) {
@@ -210,10 +250,10 @@ async function runArLoop(s: XRSession) {
     log("requestHitTestSource not available on this session");
   }
 
-  const depthCtx = depthCanvas.getContext("2d")!;
   let lastDepthDraw = 0;
   let depthReported = false;
   let frames = 0;
+  let debuggedViews = false;
 
   const onFrame: XRFrameRequestCallback = (time, frame) => {
     s.requestAnimationFrame(onFrame);
@@ -226,61 +266,81 @@ async function runArLoop(s: XRSession) {
     const pose = frame.getViewerPose(refSpace);
     if (!pose) return;
 
+    if (!debuggedViews) {
+      debuggedViews = true;
+      log(`viewer pose ok, ${pose.views.length} view(s)`);
+    }
+
     // --- hit test ---
     let hits = 0;
     if (hitTestSource) {
-      const results = frame.getHitTestResults(hitTestSource);
-      hits = results.length;
-      reticleEl.classList.toggle("hit", hits > 0);
+      hits = frame.getHitTestResults(hitTestSource).length;
     }
+    reticleEl.classList.toggle("hit", hits > 0);
+    reticleLabel.textContent = hits > 0 ? "SURFACE" : "";
 
     // --- depth ---
-    let depthText = "depth: none on this device";
+    let depthText = "depth: not exposed on this device";
     for (const view of pose.views) {
       const depth = frame.getDepthInformation?.(view) as XRDepthInformation | null;
       if (!depth) continue;
-      const cpu = depth as unknown as { getDepthInMeters?: (x: number, y: number) => number };
-      let centre = "";
+      const cpu = depth as unknown as {
+        getDepthInMeters?: (x: number, y: number) => number;
+      };
+      let centre: number | undefined;
       if (typeof cpu.getDepthInMeters === "function") {
         try {
-          const m = cpu.getDepthInMeters(depth.width / 2, depth.height / 2);
-          centre = ` centre=${m.toFixed(2)}m`;
+          centre = cpu.getDepthInMeters(depth.width / 2, depth.height / 2);
         } catch {
           /* out of range */
         }
       }
-      depthText = `depth: ${depth.width}x${depth.height} ${(session as XRSession & { depthUsage?: string }).depthUsage ?? ""}${centre}`;
+      report.depth = {
+        active: true,
+        width: depth.width,
+        height: depth.height,
+        usage: report.session.depthUsage ?? undefined,
+        format: report.session.depthDataFormat ?? undefined,
+        centreMeters: centre,
+      };
+      depthWrap.classList.remove("off");
+      depthText =
+        `depth: ${depth.width}x${depth.height}` +
+        (centre !== undefined ? ` centre=${centre.toFixed(2)}m` : "");
       if (!depthReported) {
         depthReported = true;
-        log(`depth-sensing ACTIVE: ${depth.width}x${depth.height}${centre}`);
+        log(`depth-sensing ACTIVE: ${depth.width}x${depth.height}`);
       }
       if (time - lastDepthDraw > 250 && cpu.getDepthInMeters) {
         lastDepthDraw = time;
-        drawDepthPreview(cpu.getDepthInMeters.bind(depth));
+        drawDepthPreview(cpu.getDepthInMeters.bind(depth), depth.width, depth.height);
       }
-      void depthCtx;
     }
 
-    hudEl.textContent =
-      `frame ${frames}\n` +
-      `views ${pose.views.length}\n` +
-      `hit-test hits ${hits}${hits ? " (reticle locked)" : ""}\n` +
-      depthText;
+    setArLive(
+      `frame ${frames}  views ${pose.views.length}\n` +
+        `hit-test ${hits ? `LOCK (${hits})` : "searching"}\n` +
+        depthText,
+    );
   };
 
   s.requestAnimationFrame(onFrame);
   log("render loop running");
 }
 
-function drawDepthPreview(sample: (x: number, y: number) => number) {
-  const w = depthCanvas.width;
-  const h = depthCanvas.height;
+function drawDepthPreview(
+  sample: (x: number, y: number) => number,
+  srcW: number,
+  srcH: number,
+) {
   const ctx = depthCanvas.getContext("2d");
   if (!ctx) return;
-  const img = ctx.createImageData(w, h);
-  // The depth map size may differ from the canvas; sample over its own extent.
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
+  const w = depthCanvas.width;
+  const h = depthCanvas.height;
+  // Canvas is a fixed preview size; scale samples from the raw depth extent.
+  const img = ctx.createImageData(srcW, srcH);
+  for (let y = 0; y < srcH; y++) {
+    for (let x = 0; x < srcW; x++) {
       let m = NaN;
       try {
         m = sample(x, y);
@@ -288,29 +348,61 @@ function drawDepthPreview(sample: (x: number, y: number) => number) {
         /* ignore */
       }
       const v = Number.isFinite(m) ? Math.max(0, Math.min(1, 1 - m / 5)) : 0;
-      const i = (y * w + x) * 4;
+      const i = (y * srcW + x) * 4;
       img.data[i] = img.data[i + 1] = img.data[i + 2] = v * 255;
       img.data[i + 3] = 255;
     }
   }
-  ctx.putImageData(img, 0, 0);
+  const tmp = document.createElement("canvas");
+  tmp.width = srcW;
+  tmp.height = srcH;
+  tmp.getContext("2d")!.putImageData(img, 0, 0);
+  ctx.drawImage(tmp, 0, 0, w, h);
+}
+
+// --- sending the report -----------------------------------------------------
+
+async function sendReport(): Promise<boolean> {
+  report.timestamp = new Date().toISOString();
+  const text = JSON.stringify(report, null, 2);
+  try {
+    const res = await fetch(REPORT_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: text,
+    });
+    const result = (await res.json()) as { ok: boolean; saved?: string; error?: string };
+    if (!res.ok || !result.ok) throw new Error(result.error ?? `HTTP ${res.status}`);
+    log(`report saved: ${result.saved}`);
+    setArLive(`${arLiveEl.textContent}\n\n✔ report saved to\n${result.saved}`);
+    arSendBtn.textContent = "Sent ✔";
+    return true;
+  } catch (e) {
+    log(`send failed: ${String(e)}`);
+    // Fallback so the report is not lost if the dev-server sink is unavailable.
+    try {
+      await navigator.clipboard.writeText(text);
+      arSendBtn.textContent = "Copied (send failed)";
+    } catch {
+      arSendBtn.textContent = "Send failed";
+    }
+    return false;
+  }
 }
 
 // --- wiring -----------------------------------------------------------------
 
 async function init() {
-  copyBtn.addEventListener("click", copyReport);
+  arSendBtn.addEventListener("click", () => void sendReport());
+  arExitBtn.addEventListener("click", () => void session?.end());
   runBtn.addEventListener("click", () => void startSessionTest());
-  exitBtn.addEventListener("click", () => void session?.end());
 
   const canRun = await probeEnvironment();
   runBtn.disabled = !canRun;
   runBtn.textContent = canRun
     ? "Run AR capability test"
     : "AR not supported on this browser/device";
-  if (!canRun) {
-    log("Cannot start immersive-ar session here.");
-  }
+  if (!canRun) log("Cannot start immersive-ar session here.");
 }
 
 void init();

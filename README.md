@@ -93,6 +93,20 @@ without touching the main app. Open them on the phone using either method above:
 
 These pages deliberately avoid Babylon so they still work if app code regresses.
 
+### Sending a report back (no copy/paste)
+
+The capability page has a **Send report** button. It POSTs the result to a small dev-only
+endpoint (`/__diag/report`, see `apps/client/vite.config.ts`) which writes it to disk:
+
+```
+apps/client/reports/capabilities-<timestamp>.json
+apps/client/reports/latest-capabilities.json   <- most recent, easy to grab
+```
+
+A step-by-step **in-AR panel** shows the feature list, live hit-test/depth state, and the
+Send/End buttons, so everything is usable while inside the AR session. If the send fails
+(e.g. the sink is unavailable) the page falls back to copying to the clipboard.
+
 ## Current priorities (per project brief)
 
 1. **Mobile AR scan HUD** - the core deliverable.
