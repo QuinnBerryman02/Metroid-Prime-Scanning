@@ -41,21 +41,56 @@ docs/            plans and design notes
 npm install
 npm run dev:inference   # python model service on :8000
 npm run dev:server      # gateway on :3000
-npm run dev:client      # web app on :5173
+npm run dev:client      # web app on :5173 (HTTPS, see below)
 ```
 
 See `docs/PLAN.md` for the staged build order.
 
+## Running on the phone (HTTPS made easy)
+
+WebXR and the camera only work in a **secure context**. `http://localhost` counts, a LAN
+IP does not - so the dev server serves HTTPS using a **self-signed certificate** that Vite
+generates automatically (`@vitejs/plugin-basic-ssl`). No cloudflared, no mkcert, no cert
+files to manage.
+
+```bash
+npm run dev:client
+```
+
+Vite prints something like:
+
+```
+  ➜  Local:   https://localhost:5173/
+  ➜  Network: https://192.168.1.13:5173/
+```
+
+On the phone (same Wi-Fi) open the **Network** URL. The first time you'll get a
+"Not private / certificate not trusted" warning - tap **Advanced -> Proceed**. That's
+expected for a self-signed cert; the connection is still encrypted and now a secure
+context, so WebXR works.
+
+### Alternative: no warning at all (Android + USB)
+
+If you'd rather not click through the cert warning, forward the port over USB so the phone
+sees it as `localhost` (which is trusted):
+
+```bash
+adb reverse tcp:5173 tcp:5173
+# then on the phone browser: http://localhost:5173/capabilities.html
+```
+
+`adb` ships with Android Studio / the Android Platform Tools. This also avoids any
+firewall issues.
+
 ## Manual test pages
 
 The client ships small standalone diagnostics so you can sanity-check real hardware
-without touching the main app. Open them on the phone over **HTTPS**:
+without touching the main app. Open them on the phone using either method above:
 
 | Page | URL | Checks |
 |---|---|---|
 | Capability test | `/capabilities.html` | secure context, WebXR support, which AR features are enabled (hit-test, anchors, plane + **depth sensing**, camera-access, dom-overlay, ...), plus a live depth preview and hit-test reticle |
 
-Run the client bound to your LAN and open `https://<your-lan-ip>:5173/capabilities.html`.
 These pages deliberately avoid Babylon so they still work if app code regresses.
 
 ## Current priorities (per project brief)
