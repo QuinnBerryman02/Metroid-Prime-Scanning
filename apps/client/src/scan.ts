@@ -85,21 +85,43 @@ function draw(result: ScanResult) {
   const rect = videoRect();
   const sx = rect.w / result.width;
   const sy = rect.h / result.height;
-  const aimedIndex = result.aimed?.detectionIndex ?? -1;
+  const aimed = result.aimed;
+  const aimedIndex = aimed?.detectionIndex ?? -1;
 
-  ctx.lineWidth = 3;
   ctx.font = "13px ui-monospace, monospace";
+
   result.detections.forEach((d, i) => {
-    const [x1, y1, x2, y2] = d.box;
-    const aimed = i === aimedIndex;
-    const colour = aimed ? "#ffd54f" : "#7cf7c4";
+    const isAimed = i === aimedIndex;
+    const colour = isAimed ? "#ffd54f" : "#7cf7c4";
     ctx.strokeStyle = colour;
     ctx.fillStyle = colour;
+    ctx.lineWidth = 3;
+
+    const [x1, y1, x2, y2] = d.box;
     const x = rect.x + x1 * sx;
     const y = rect.y + y1 * sy;
-    ctx.strokeRect(x, y, (x2 - x1) * sx, (y2 - y1) * sy);
-    const label = `${d.label} ${d.score.toFixed(2)}`;
-    ctx.fillText(label, x + 2, Math.max(y - 4, 14));
+
+    if (isAimed && aimed?.contour2d && aimed.contour2d.length > 2) {
+      // Stage B: smooth silhouette from the segmentation mask.
+      ctx.beginPath();
+      aimed.contour2d.forEach(([u, v], k) => {
+        const px = rect.x + u * sx;
+        const py = rect.y + v * sy;
+        if (k === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
+      ctx.closePath();
+      ctx.fillStyle = "rgba(255, 213, 79, 0.18)";
+      ctx.fill();
+      ctx.strokeStyle = colour;
+      ctx.lineWidth = 4;
+      ctx.stroke();
+    } else {
+      ctx.strokeRect(x, y, (x2 - x1) * sx, (y2 - y1) * sy);
+    }
+
+    ctx.fillStyle = colour;
+    ctx.fillText(`${d.label} ${d.score.toFixed(2)}`, x + 2, Math.max(y - 4, 14));
   });
 }
 
@@ -122,10 +144,15 @@ async function capture() {
     const result = (await res.json()) as ScanResult;
     const rtt = performance.now() - t0;
     draw(result);
-    const server = result.timing.detect?.toFixed(0) ?? "?";
-    log(`scan ok: ${result.detections.length} dets, server ${server} ms, rtt ${rtt.toFixed(0)} ms`);
+    const t = result.timing;
+    const ms = (v?: number) => (v == null ? "-" : v.toFixed(0));
+    log(
+      `scan ok: ${result.detections.length} dets  detect ${ms(t.detect)} ` +
+        `segment ${ms(t.segment)} depth ${ms(t.depth)} ms  rtt ${rtt.toFixed(0)} ms`,
+    );
     cardEl.textContent = result.aimed
-      ? `SCANNED: ${result.aimed.name} (class ${result.aimed.classId})`
+      ? `SCANNED: ${result.aimed.name}` +
+        (result.aimed.pointCount ? ` · ${result.aimed.pointCount} pts` : "")
       : "No object under the reticle";
   } catch (e) {
     log(`scan failed: ${String(e)}`);

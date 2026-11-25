@@ -47,11 +47,15 @@ export interface Aimed {
   detectionIndex: number;
   classId: number;
   name?: string;
+  /** Mask boundary in image pixels (closed polyline), Stage B. */
+  contour2d?: [number, number][];
   /** Camera-space (origin = camera, +z forward) - see docs/LIFTING.md. */
   contourCam?: Vec3[];
   obbCam?: Obb;
   depthAtCentre?: number;
   scaleHint?: string;
+  /** Number of masked points unprojected (debug / quality signal). */
+  pointCount?: number;
 }
 
 /** POST /scan request (base64 image, no data-URI prefix). */

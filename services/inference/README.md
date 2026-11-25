@@ -7,8 +7,9 @@ feeds into the 3D overlay, and `docs/MODELS.md` for model choices.
 
 - **Stage A** - `POST /scan` returns YOLO detections (boxes + labels) for a
   keyframe, plus which detection is under the reticle (`aimed`). ✅
-- **Stage B** - add `mask` + camera-space `contourCam` / `obbCam` to the aimed
-  object (schema fields already exist, currently `null`).
+- **Stage B** - the aimed object is segmented (SAM 2.1), given depth (Depth
+  Anything V2) and lifted into camera-space geometry: `contour2d`, `contourCam`,
+  `obbCam`, `depthAtCentre`. ✅ (see `docs/LIFTING.md`)
 
 ## Setup
 
@@ -40,6 +41,21 @@ Environment:
 | `EXPORT_OPENVINO` | `1` | auto-export the `.pt` to OpenVINO |
 | `IMGSZ` | `640` | inference resolution |
 | `CONF` | `0.25` | detection confidence threshold |
+| `SEGMENT` | `1` | enable Stage-B segmentation (SAM) |
+| `DEPTH` | `1` | enable Stage-B depth (Depth Anything V2) |
+| `SAM_MODEL` | `./notebooks/sam2.1_t.pt` | SAM weights (local path or Ultralytics name) |
+| `DEPTH_MODEL` | `depth-anything/Depth-Anything-V2-Small-hf` | HF depth model |
+| `FOV_DEG` | `60` | default horizontal FOV for intrinsics |
+
+Stage B models are optional: if they fail to load the service still serves
+boxes (it logs a warning). Segment/depth run on CPU by default; set
+`SAM_DEVICE` / `DEPTH_DEVICE` to move them.
+
+### Latency (Intel Core Ultra 7 165U)
+
+Per `/scan` on a keyframe: detect ~22 ms (iGPU), segment ~2.5 s (SAM 2.1 tiny,
+CPU), depth ~1.2 s (Depth Anything V2 Small, CPU). Segmentation is only run for
+the aimed object. Exporting SAM/depth to OpenVINO is the next speed-up.
 
 ## Endpoints
 
@@ -65,14 +81,20 @@ Response (Stage A):
     { "classId": 5, "label": "bus", "score": 0.92,
       "box": [27, 232, 802, 737], "mask": null }
   ],
-  "aimed": { "detectionIndex": 0, "classId": 5, "name": "bus",
-             "contourCam": null, "obbCam": null,
-             "depthAtCentre": null, "scaleHint": null },
-  "timing": { "detect": 18.7 }
+  "aimed": {
+    "detectionIndex": 0, "classId": 5, "name": "bus",
+    "contour2d": [[u, v], ...],             // mask boundary, image pixels
+    "contourCam": [[x, y, z], ...],          // same points, camera space
+    "obbCam": { "center": [x, y, z], "size": [w, h, d], "quat": [x, y, z, w] },
+    "depthAtCentre": 3.02, "scaleHint": "hit-test", "pointCount": 16273
+  },
+  "timing": { "detect": 22, "segment": 2533, "depth": 1155 }
 }
 ```
 
-`box` is `[x1, y1, x2, y2]` in pixels of the submitted image.
+`box` is `[x1, y1, x2, y2]` in pixels of the submitted image. Camera space has
+origin at the camera, `+z` forward, in *relative* depth units - the phone
+recovers metric scale from an AR hit-test (see `docs/LIFTING.md`).
 
 ## Test
 

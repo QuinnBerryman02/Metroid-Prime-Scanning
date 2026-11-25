@@ -68,13 +68,16 @@ Stage A (done):
 - [x] Test harness (`scripts/test_scan.py`); measured ~20 ms/scan on the iGPU.
 - [x] Gateway `POST /scan` proxy + `/scan.html` phone verification page.
 
-Stage B (next):
+Stage B (done):
 
-- [ ] Add `mask` (SAM 2.1 prompted at the reticle) and lift it to camera-space
-      `contourCam` / `obbCam` (see `docs/LIFTING.md`).
+- [x] Segment the aimed object (SAM 2.1 tiny, box-prompted) -> `mask` + `contour2d`.
+- [x] Depth (Depth Anything V2 Small) -> unproject the mask to camera space;
+      reduce to `contourCam` + `obbCam` (PCA + robust extents). See `docs/LIFTING.md`.
+- [ ] Speed: export SAM/depth to OpenVINO (currently ~3.7 s/scan on CPU).
 - [ ] Optional: CLIP zero-shot classifier on crops; Florence-2 caption (async).
 
 **Stage A done when:** a photo gives labels back in < ~150 ms. (achieved, ~20 ms)
+**Stage B done when:** the aimed object yields a camera-space contour + OBB. (achieved)
 
 **De-risk here:** OpenVINO export/quantisation path, iGPU vs CPU device selection.
 

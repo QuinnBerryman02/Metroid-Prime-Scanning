@@ -47,13 +47,33 @@ def main() -> int:
             response = client.post("/scan", json=body)
             response.raise_for_status()
             data = response.json()
-            print(f"  scan {i + 1}: {data['timing']['detect']:.0f} ms")
+            t = data["timing"]
+            parts = " ".join(f"{k}={v:.0f}" for k, v in t.items())
+            print(f"  scan {i + 1}: {parts} ms")
 
     print(f"image {data['width']}x{data['height']}  timing {data['timing']}")
     for d in data["detections"]:
         box = ", ".join(f"{v:.0f}" for v in d["box"])
-        print(f"  {d['label']:<12} {d['score']:.2f}  [{box}]")
-    print("aimed:", data["aimed"])
+        flag = " mask" if d.get("mask") else ""
+        print(f"  {d['label']:<12} {d['score']:.2f}  [{box}]{flag}")
+
+    aimed = data["aimed"]
+    if aimed:
+        obb = aimed.get("obbCam")
+        obb_str = "-"
+        if obb:
+            size = "x".join(f"{v:.2f}" for v in obb["size"])
+            centre = ",".join(f"{v:.2f}" for v in obb["center"])
+            obb_str = f"size {size} @ ({centre})"
+        depth = aimed.get("depthAtCentre")
+        depth_str = f"{depth:.3f}" if depth is not None else "-"
+        print(
+            f"aimed: {aimed['name']}  points={aimed.get('pointCount')} "
+            f"contour={len(aimed.get('contour2d') or [])}pts "
+            f"depthAtCentre={depth_str} "
+            f"scale={aimed.get('scaleHint')}"
+        )
+        print(f"       obbCam {obb_str}")
     return 0 if data["detections"] else 1
 
 

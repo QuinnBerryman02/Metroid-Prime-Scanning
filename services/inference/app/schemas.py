@@ -50,11 +50,15 @@ class Aimed(BaseModel):
     detectionIndex: int
     classId: int
     name: str | None = None
+    # The mask boundary in image pixels (closed polyline), Stage B.
+    contour2d: list[list[float]] | None = None
     # All Stage-B fields below are in CAMERA space (camera at origin, +z forward).
     contourCam: list[list[float]] | None = None
     obbCam: Obb | None = None
     depthAtCentre: float | None = None
     scaleHint: str | None = None
+    # Number of masked points unprojected (debug / quality signal).
+    pointCount: int | None = None
 
 
 class ScanResponse(BaseModel):
@@ -80,3 +84,5 @@ class ScanRequest(BaseModel):
     frameId: str = ""
     aimX: float = 0.5
     aimY: float = 0.5
+    # Horizontal FOV in degrees; falls back to the server default when omitted.
+    fovDeg: float | None = None
