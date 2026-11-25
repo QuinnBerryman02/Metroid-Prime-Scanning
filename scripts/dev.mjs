@@ -7,15 +7,21 @@
  * Starts the inference service, the gateway, and the Vite client together,
  * prefixing each line of output with its source. Ctrl+C stops everything.
  * Cross-platform (Windows / macOS / Linux), no extra dependencies.
+ *
+ * The gateway and client are launched by running their tools' JS entry points
+ * with node directly rather than via `npm run --workspace`. Going through npm
+ * on Windows wraps the command in a cmd.exe batch job, which makes Ctrl+C pop
+ * up a "Terminate batch job (Y/N)?" prompt. Spawning node directly avoids it.
  */
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const isWin = process.platform === "win32";
-const npm = isWin ? "npm.cmd" : "npm";
+const require = createRequire(import.meta.url);
 
 const RESET = "\x1b[0m";
 const DIM = "\x1b[2m";
@@ -24,6 +30,11 @@ const COLOURS = {
   gateway: "\x1b[36m", // cyan
   client: "\x1b[32m", // green
 };
+
+/** Absolute path to a file inside an installed package (e.g. tsx's CLI). */
+function packageFile(pkg, ...rel) {
+  return join(dirname(require.resolve(`${pkg}/package.json`)), ...rel);
+}
 
 /** Prefer the project venv, whichever layout it uses. */
 function findPython() {
@@ -46,7 +57,6 @@ if (python) {
     cmd: python,
     args: ["-m", "uvicorn", "app.main:app", "--reload", "--port", "8000"],
     cwd: join(root, "services", "inference"),
-    shell: false, // real .exe: spawning via a shell breaks on spaces in the path
   });
 } else {
   const bin = isWin ? ".venv\\Scripts\\python" : ".venv/bin/python";
@@ -59,20 +69,25 @@ if (python) {
   );
 }
 
-tasks.push({
-  name: "gateway",
-  cmd: npm,
-  args: ["run", "dev", "--workspace", "apps/server"],
-  cwd: root,
-  shell: isWin, // npm.cmd needs a shell on Windows
-});
-tasks.push({
-  name: "client",
-  cmd: npm,
-  args: ["run", "dev", "--workspace", "apps/client"],
-  cwd: root,
-  shell: isWin,
-});
+try {
+  tasks.push({
+    name: "gateway",
+    cmd: process.execPath,
+    args: [packageFile("tsx", "dist", "cli.mjs"), "watch", "src/index.ts"],
+    cwd: join(root, "apps", "server"),
+  });
+  tasks.push({
+    name: "client",
+    cmd: process.execPath,
+    args: [packageFile("vite", "bin", "vite.js")],
+    cwd: join(root, "apps", "client"),
+  });
+} catch (err) {
+  console.error(
+    `\nCould not find tsx/vite — run "npm install" first.\n${err.message}\n`,
+  );
+  process.exit(1);
+}
 
 const children = [];
 let shuttingDown = false;
@@ -97,6 +112,7 @@ function pipe(stream, name) {
 function shutdown(code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
+  process.stdout.write(`\n${DIM}Shutting down…${RESET}\n`);
   for (const child of children) {
     if (child.exitCode !== null || child.signalCode !== null) continue;
     try {
@@ -112,7 +128,7 @@ function shutdown(code = 0) {
     }
   }
   // Give children a moment to die, then exit.
-  setTimeout(() => process.exit(code), 400);
+  setTimeout(() => process.exit(code), 500);
 }
 
 console.log("Starting full stack — inference + gateway + client (Ctrl+C to stop)\n");
@@ -121,8 +137,8 @@ for (const task of tasks) {
   const child = spawn(task.cmd, task.args, {
     cwd: task.cwd,
     env: process.env,
-    shell: task.shell,
     stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
   });
   children.push(child);
   pipe(child.stdout, task.name);
