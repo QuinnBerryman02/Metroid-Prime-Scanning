@@ -6,7 +6,7 @@
       name="viewport"
       content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
     />
-    <title>Metroid Scan - Detection test</title>
+    <title>Metroid Scan</title>
     <style>
       :root {
         color-scheme: dark;
@@ -21,6 +21,10 @@
         background: #05080a;
         font: 14px/1.4 ui-monospace, Menlo, monospace;
         color: #d7e2e6;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+        touch-action: none;
       }
       #video {
         position: fixed;
@@ -118,6 +122,73 @@
         }
       }
 
+      /* --- radial wheel --- */
+      #wheel {
+        position: fixed;
+        inset: 0;
+        z-index: 9;
+        pointer-events: none;
+        display: none;
+      }
+      #wheel.show {
+        display: block;
+        animation: fadein 0.12s ease-out;
+      }
+      @keyframes fadein {
+        from {
+          opacity: 0;
+        }
+      }
+      .wheel-opt {
+        position: absolute;
+        width: 74px;
+        height: 74px;
+        transform: translate(-50%, -50%);
+        border-radius: 50%;
+        border: 2px solid #2b4149;
+        background: rgba(10, 22, 28, 0.92);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        line-height: 1.15;
+        text-align: center;
+        color: #cfe6e0;
+        transition:
+          border-color 0.1s,
+          background 0.1s,
+          transform 0.1s;
+      }
+      .wheel-opt .dev {
+        font-size: 9px;
+        opacity: 0.65;
+        margin-top: 2px;
+      }
+      .wheel-opt.selected {
+        border-color: var(--warm);
+        background: rgba(58, 42, 10, 0.95);
+        color: var(--warm);
+        transform: translate(-50%, -50%) scale(1.18);
+      }
+      .wheel-opt.unavailable {
+        opacity: 0.35;
+      }
+      .wheel-hub {
+        position: absolute;
+        transform: translate(-50%, -50%);
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        border: 2px dashed #34505c;
+        background: rgba(10, 22, 28, 0.85);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 9px;
+        color: #8fb3ac;
+      }
+
       /* --- chrome --- */
       #topbar {
         position: fixed;
@@ -127,13 +198,17 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
-        z-index: 8;
+        z-index: 10;
       }
       #status {
         padding: 7px 12px;
         border-radius: 8px;
         background: rgba(4, 12, 15, 0.78);
         border: 1px solid #1e3a44;
+        max-width: 70vw;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       #status.busy {
         border-color: var(--warm);
@@ -147,64 +222,21 @@
         border-radius: 8px;
         background: rgba(4, 12, 15, 0.78);
       }
-      #card {
+      #hint {
         position: fixed;
         left: 50%;
-        top: 14%;
+        bottom: 22px;
         transform: translateX(-50%);
-        padding: 10px 16px;
-        border-radius: 10px;
-        background: rgba(4, 12, 15, 0.82);
-        border: 1px solid #1e7a5f;
-        color: var(--accent);
-        text-align: center;
-        min-width: 40vw;
-        z-index: 8;
-        max-width: 90vw;
+        padding: 8px 14px;
+        border-radius: 20px;
+        background: rgba(4, 12, 15, 0.7);
+        border: 1px solid #1e3a44;
+        color: #9fc8bd;
+        font-size: 12px;
+        z-index: 10;
       }
-      #bar {
-        position: fixed;
-        left: 0;
-        right: 0;
-        bottom: 16px;
-        display: flex;
-        gap: 10px;
-        justify-content: center;
-        flex-wrap: wrap;
-        z-index: 8;
-      }
-      #bar button {
-        font: inherit;
-        padding: 14px 18px;
-        border-radius: 12px;
-        border: 1px solid #2b4149;
-        background: #12242b;
-        color: #eaf6f3;
-        cursor: pointer;
-      }
-      #bar button:disabled {
-        opacity: 0.5;
-      }
-      #scanBtn {
-        background: #0e3a2f;
-        border-color: #1e7a5f;
-      }
-      #depthBtn {
-        background: #2a2440;
-        border-color: #5b4b9c;
-      }
-      #backBtn {
+      #hint.hidden {
         display: none;
-        background: #3a2410;
-        border-color: #9c7a1e;
-      }
-      #backBtn.show {
-        display: inline-block;
-      }
-      #fastToggle.active {
-        background: #113a44;
-        border-color: var(--accent);
-        color: var(--accent);
       }
     </style>
   </head>
@@ -213,21 +245,13 @@
     <canvas id="overlay"></canvas>
     <img id="depthImg" alt="depth map" />
     <div id="reticle"><span class="ring"></span></div>
+    <div id="wheel"></div>
 
     <div id="topbar">
       <span id="status">starting camera…</span>
       <a href="/">&larr; home</a>
     </div>
-    <div id="card">Aim the reticle at an object, then Scan</div>
-
-    <div id="bar">
-      <button id="scanBtn" disabled>Scan</button>
-      <button id="depthBtn" disabled>Depth</button>
-      <button id="fastToggle" title="YOLO11-seg on the iGPU instead of SAM 2.1">
-        Fast mask: off
-      </button>
-      <button id="backBtn">Back to feed</button>
-    </div>
+    <div id="hint">Hold to scan</div>
 
     <pre id="debug"></pre>
     <script type="module" src="/src/scan.ts"></script>

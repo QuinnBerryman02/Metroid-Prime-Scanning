@@ -3,7 +3,7 @@ Smoke-test `/scan` in-process (no server needed).
 
     .venv/Scripts/python.exe scripts/test_scan.py
 
-Exercises both segmenters ("sam2" quality / "yolo11" fast) and the depth mode.
+Runs every available wheel method (SAM1, SAM2, FastSAM, YOLO, DEPTH).
 """
 from __future__ import annotations
 
@@ -53,33 +53,42 @@ def run_scan(client: TestClient, image: str, **extra):
 
 def main() -> int:
     image = encode()
+    ok = True
     with TestClient(app) as client:
         health = client.get("/health").json()
-        print("health:", health)
-        if not health.get("ok"):
-            return 1
+        print("health :", health)
+        registry = client.get("/methods").json()
+        print("device :", registry["device"])
 
-        for seg in ("sam2", "yolo11"):
-            data, rtt = run_scan(client, image, segmenter=seg)
+        for method in registry["methods"]:
+            if not method["available"]:
+                print(f"[{method['label']:<7}] unavailable - skipped")
+                continue
+            data, rtt = run_scan(client, image, method=method["id"])
+            if method["kind"] == "depth":
+                result = data["depth"]
+                print(
+                    f"[{method['label']:<7}] {method['device']} {method['kind']:<6} "
+                    f"rtt={rtt:6.0f} ms | {fmt(data['timing'])} | png={len(result['png'])}B"
+                )
+                continue
             aimed = data["aimed"]
-            print(f"[scan/{seg:<6}] rtt={rtt:6.0f} ms | {fmt(data['timing'])}")
-            print(f"              detections={len(data['detections'])}")
+            labels = ", ".join(d["label"] for d in data["detections"][:6])
+            print(
+                f"[{method['label']:<7}] {method['device']} {method['kind']:<6} "
+                f"rtt={rtt:6.0f} ms | {fmt(data['timing'])} | masks={len(data['detections'])} [{labels}]"
+            )
             if aimed:
                 obb = aimed["obbCam"]
                 size = "x".join(f"{v:.2f}" for v in obb["size"]) if obb else "-"
                 print(
-                    f"              aimed={aimed['name']} points={aimed['pointCount']} "
+                    f"           aimed={aimed['name']} points={aimed['pointCount']} "
                     f"contour={len(aimed.get('contour2d') or [])}pts obb={size}"
                 )
+            elif method["kind"] == "prompt":
+                ok = False
 
-        data, rtt = run_scan(client, image, mode="depth")
-        result = data["depth"]
-        print(
-            f"[depth      ] rtt={rtt:6.0f} ms | {fmt(data['timing'])} | "
-            f"png={len(result['png'])}B range=({result['min']:.2f},{result['max']:.2f})"
-        )
-
-    return 0 if health.get("ok") else 1
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

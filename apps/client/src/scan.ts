@@ -1,12 +1,11 @@
 /**
- * Detection / depth test page.
+ * Scan HUD with a long-press radial wheel.
  *
- * Live camera -> capture a downscaled still -> POST /api/scan -> draw the
- * result. Two modes:
- *   * Scan  - YOLO boxes + the aimed object's segmentation silhouette.
- *   * Depth - the depth model's output, shown in place of the camera feed.
+ * Hold near the reticle -> a wheel of methods (SAM1 / SAM2 / FastSAM / YOLO /
+ * DEPTH) appears. Drag toward one to highlight it, release to run it. Depth
+ * replaces the feed; a tap returns to the camera.
  */
-import type { ScanResult } from "@metroid-scan/shared";
+import type { MethodInfo, MethodsResponse, ScanResult } from "@metroid-scan/shared";
 import { installDebugOverlay, log } from "./lib/debug";
 
 installDebugOverlay();
@@ -15,19 +14,30 @@ const video = document.getElementById("video") as HTMLVideoElement;
 const overlay = document.getElementById("overlay") as HTMLCanvasElement;
 const depthImg = document.getElementById("depthImg") as HTMLImageElement;
 const reticle = document.getElementById("reticle")!;
-const scanBtn = document.getElementById("scanBtn") as HTMLButtonElement;
-const depthBtn = document.getElementById("depthBtn") as HTMLButtonElement;
-const fastToggle = document.getElementById("fastToggle") as HTMLButtonElement;
-const backBtn = document.getElementById("backBtn") as HTMLButtonElement;
+const wheel = document.getElementById("wheel")!;
 const statusEl = document.getElementById("status")!;
-const cardEl = document.getElementById("card")!;
+const hintEl = document.getElementById("hint")!;
 
 const MAX_EDGE = 640;
+const LONG_PRESS_MS = 320;
+const WHEEL_RADIUS = 118;
+const MOVED_THRESHOLD = 14;
+const DEAD_ZONE = 34;
+const TAU = Math.PI * 2;
+
+let methods: MethodInfo[] = [];
 let stream: MediaStream | null = null;
 let facing: "environment" | "user" = "environment";
 let busy = false;
-let fastMask = false;
+let depthShown = false;
 
+let pressTimer: number | null = null;
+let pressStart = { x: 0, y: 0 };
+let moved = false;
+let wheelOpen = false;
+let selectedIndex = -1;
+
+// --- camera ---------------------------------------------------------------
 async function startCamera() {
   stream?.getTracks().forEach((t) => t.stop());
   setStatus("starting camera…");
@@ -42,9 +52,7 @@ async function startCamera() {
     });
     video.srcObject = stream;
     await video.play();
-    scanBtn.disabled = false;
-    depthBtn.disabled = false;
-    setStatus("Ready");
+    setStatus("Hold to scan");
     layoutOverlay();
   } catch (e) {
     setStatus("camera failed");
@@ -56,17 +64,14 @@ function snapshot(): string {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   const scale = Math.min(1, MAX_EDGE / Math.max(vw, vh));
-  const width = Math.round(vw * scale);
-  const height = Math.round(vh * scale);
   const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  canvas.getContext("2d")!.drawImage(video, 0, 0, width, height);
-  const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
-  return dataUrl.slice(dataUrl.indexOf(",") + 1);
+  canvas.width = Math.round(vw * scale);
+  canvas.height = Math.round(vh * scale);
+  canvas.getContext("2d")!.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const url = canvas.toDataURL("image/jpeg", 0.8);
+  return url.slice(url.indexOf(",") + 1);
 }
 
-/** The rect the video is actually drawn in, given object-fit: contain. */
 function videoRect() {
   const vw = video.videoWidth || 1;
   const vh = video.videoHeight || 1;
@@ -84,90 +89,127 @@ function layoutOverlay() {
   overlay.height = Math.round(video.clientHeight * dpr);
 }
 
-function draw(result: ScanResult) {
-  const ctx = overlay.getContext("2d")!;
-  const dpr = window.devicePixelRatio || 1;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, overlay.width, overlay.height);
+// --- methods + wheel ------------------------------------------------------
+async function loadMethods() {
+  try {
+    const res = await fetch("/api/methods");
+    const data = (await res.json()) as MethodsResponse;
+    methods = data.methods;
+    log(`methods: ${methods.map((m) => m.label).join(", ")} (device ${data.device})`);
+  } catch (e) {
+    log(`methods load failed: ${String(e)}`);
+  }
+}
 
-  const rect = videoRect();
-  const sx = rect.w / result.width;
-  const sy = rect.h / result.height;
-  const aimed = result.aimed;
-  const aimedIndex = aimed?.detectionIndex ?? -1;
+const optionAngle = (i: number) =>
+  -Math.PI / 2 + (i * TAU) / Math.max(methods.length, 1);
 
-  ctx.font = "13px ui-monospace, monospace";
+function angleDelta(a: number, b: number) {
+  let d = (a - b) % TAU;
+  if (d > Math.PI) d -= TAU;
+  if (d < -Math.PI) d += TAU;
+  return d;
+}
 
-  result.detections.forEach((d, i) => {
-    const isAimed = i === aimedIndex;
-    const colour = isAimed ? "#ffd54f" : "#7cf7c4";
-    ctx.strokeStyle = colour;
-    ctx.fillStyle = colour;
-    ctx.lineWidth = 3;
+function buildWheel() {
+  const cx = window.innerWidth / 2;
+  const cy = window.innerHeight / 2;
+  wheel.innerHTML = "";
+  const hub = document.createElement("div");
+  hub.className = "wheel-hub";
+  hub.textContent = "scan";
+  hub.style.left = `${cx}px`;
+  hub.style.top = `${cy}px`;
+  wheel.appendChild(hub);
 
-    const [x1, y1, x2, y2] = d.box;
-    const x = rect.x + x1 * sx;
-    const y = rect.y + y1 * sy;
-
-    if (isAimed && aimed?.contour2d && aimed.contour2d.length > 2) {
-      // Smooth silhouette from the segmentation mask.
-      ctx.beginPath();
-      aimed.contour2d.forEach(([u, v], k) => {
-        const px = rect.x + u * sx;
-        const py = rect.y + v * sy;
-        if (k === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      });
-      ctx.closePath();
-      ctx.fillStyle = "rgba(255, 213, 79, 0.18)";
-      ctx.fill();
-      ctx.strokeStyle = colour;
-      ctx.lineWidth = 4;
-      ctx.stroke();
-    } else {
-      ctx.strokeRect(x, y, (x2 - x1) * sx, (y2 - y1) * sy);
-    }
-
-    ctx.fillStyle = colour;
-    ctx.fillText(`${d.label} ${d.score.toFixed(2)}`, x + 2, Math.max(y - 4, 14));
+  methods.forEach((m, i) => {
+    const a = optionAngle(i);
+    const el = document.createElement("div");
+    el.className = "wheel-opt" + (m.available ? "" : " unavailable");
+    el.innerHTML = `${m.label}<span class="dev">${m.available ? m.device : "n/a"}</span>`;
+    el.style.left = `${cx + WHEEL_RADIUS * Math.cos(a)}px`;
+    el.style.top = `${cy + WHEEL_RADIUS * Math.sin(a)}px`;
+    wheel.appendChild(el);
   });
 }
 
-function setStatus(text: string, scanning = false) {
-  statusEl.textContent = text;
-  statusEl.classList.toggle("busy", scanning);
-  reticle.classList.toggle("scanning", scanning);
+function openWheel() {
+  if (!methods.length) return;
+  buildWheel();
+  selectedIndex = -1;
+  wheelOpen = true;
+  wheel.classList.add("show");
 }
 
-function setBusy(value: boolean) {
-  busy = value;
-  scanBtn.disabled = value;
-  depthBtn.disabled = value;
+function closeWheel() {
+  wheelOpen = false;
+  wheel.classList.remove("show");
 }
 
-const ms = (v?: number) => (v == null ? "-" : `${v.toFixed(0)}ms`);
-
-function showDepth(result: ScanResult) {
-  if (!result.depth) return;
-  depthImg.src = `data:image/png;base64,${result.depth.png}`;
-  depthImg.classList.add("show");
-  overlay.classList.add("hidden");
-  backBtn.classList.add("show");
-  cardEl.textContent = `Depth · range ${result.depth.min.toFixed(2)}–${result.depth.max.toFixed(2)}`;
+function updateSelection(px: number, py: number) {
+  const dx = px - window.innerWidth / 2;
+  const dy = py - window.innerHeight / 2;
+  let idx = -1;
+  if (Math.hypot(dx, dy) > DEAD_ZONE) {
+    const angle = Math.atan2(dy, dx);
+    let best = Infinity;
+    methods.forEach((_, i) => {
+      const d = Math.abs(angleDelta(angle, optionAngle(i)));
+      if (d < best) {
+        best = d;
+        idx = i;
+      }
+    });
+  }
+  if (idx === selectedIndex) return;
+  selectedIndex = idx;
+  wheel
+    .querySelectorAll<HTMLElement>(".wheel-opt")
+    .forEach((el, i) => el.classList.toggle("selected", i === idx));
 }
 
-function hideDepth() {
-  depthImg.classList.remove("show");
-  depthImg.removeAttribute("src");
-  overlay.classList.remove("hidden");
-  backBtn.classList.remove("show");
-  setStatus("Ready");
+// --- pointer handling -----------------------------------------------------
+function onPointerDown(e: PointerEvent) {
+  if (busy || (e.target as HTMLElement).closest("#topbar")) return;
+  pressStart = { x: e.clientX, y: e.clientY };
+  moved = false;
+  pressTimer = window.setTimeout(() => {
+    pressTimer = null;
+    openWheel();
+  }, LONG_PRESS_MS);
 }
 
-async function capture(mode: "scan" | "depth") {
-  if (busy) return;
+function onPointerMove(e: PointerEvent) {
+  if (wheelOpen) {
+    updateSelection(e.clientX, e.clientY);
+    return;
+  }
+  if (!pressTimer) return;
+  if (Math.hypot(e.clientX - pressStart.x, e.clientY - pressStart.y) > MOVED_THRESHOLD) {
+    moved = true;
+    window.clearTimeout(pressTimer);
+    pressTimer = null;
+  }
+}
+
+function onPointerUp() {
+  if (pressTimer) {
+    window.clearTimeout(pressTimer);
+    pressTimer = null;
+  }
+  if (wheelOpen) {
+    const method = methods[selectedIndex];
+    closeWheel();
+    if (method?.available) void executeMethod(method);
+    return;
+  }
+  if (!moved && depthShown) hideDepth();
+}
+
+// --- actions --------------------------------------------------------------
+async function executeMethod(method: MethodInfo) {
   setBusy(true);
-  setStatus(mode === "depth" ? "Measuring depth…" : "Scanning…", true);
+  setStatus(`${method.label}…`, true);
   const image = snapshot();
   const t0 = performance.now();
   try {
@@ -179,47 +221,117 @@ async function capture(mode: "scan" | "depth") {
         frameId: String(Date.now()),
         aimX: 0.5,
         aimY: 0.5,
-        mode,
-        segmenter: fastMask ? "yolo11" : undefined,
+        method: method.id,
       }),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const result = (await res.json()) as ScanResult;
     const rtt = performance.now() - t0;
 
-    if (mode === "depth") {
+    if (result.kind === "depth") {
       showDepth(result);
-      setStatus(`Depth ${ms(result.timing.depth)} · ${rtt.toFixed(0)}ms round trip`);
+      setStatus(`Depth ${ms(result.timing.depth)} · ${rtt.toFixed(0)}ms`);
     } else {
       draw(result);
-      const aimed = result.aimed;
-      cardEl.textContent = aimed
-        ? `SCANNED: ${aimed.name}${aimed.pointCount ? ` · ${aimed.pointCount} pts` : ""}`
-        : "No object under the reticle";
-      setStatus(
-        `Scan ${ms(result.timing.detect)} det · ${ms(result.timing.segment)} seg · ` +
-          `${ms(result.timing.depth)} depth · ${rtt.toFixed(0)}ms round trip`,
-      );
-      log(`scan ok: ${result.detections.length} dets · ${rtt.toFixed(0)} ms rtt`);
+      const n = result.detections.length;
+      setStatus(`${method.label} · ${n} mask${n === 1 ? "" : "s"} · ${rtt.toFixed(0)}ms`);
+      log(`${method.id}: ${n} masks in ${rtt.toFixed(0)} ms`);
     }
   } catch (e) {
     setStatus("Error");
-    cardEl.textContent = "failed — is the gateway + inference running?";
     log(`scan failed: ${String(e)}`);
   } finally {
     setBusy(false);
   }
 }
 
-scanBtn.addEventListener("click", () => void capture("scan"));
-depthBtn.addEventListener("click", () => void capture("depth"));
-backBtn.addEventListener("click", hideDepth);
-fastToggle.addEventListener("click", () => {
-  fastMask = !fastMask;
-  fastToggle.classList.toggle("active", fastMask);
-  fastToggle.textContent = `Fast mask: ${fastMask ? "on" : "off"}`;
-});
-window.addEventListener("resize", layoutOverlay);
-video.addEventListener("loadedmetadata", layoutOverlay);
+function showDepth(result: ScanResult) {
+  if (!result.depth) return;
+  depthImg.src = `data:image/png;base64,${result.depth.png}`;
+  depthImg.classList.add("show");
+  overlay.classList.add("hidden");
+  depthShown = true;
+  hintEl.textContent = "Tap to go back";
+}
 
-void startCamera();
+function hideDepth() {
+  depthImg.classList.remove("show");
+  depthImg.removeAttribute("src");
+  overlay.classList.remove("hidden");
+  depthShown = false;
+  hintEl.textContent = "Hold to scan";
+}
+
+function draw(result: ScanResult) {
+  const ctx = overlay.getContext("2d")!;
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+  const rect = videoRect();
+  const sx = rect.w / result.width;
+  const sy = rect.h / result.height;
+  const aimedIndex = result.aimed?.detectionIndex ?? -1;
+
+  ctx.font = "13px ui-monospace, monospace";
+  result.detections.forEach((d, i) => {
+    const isAimed = i === aimedIndex;
+    const colour = isAimed ? "#ffd54f" : "#7cf7c4";
+    ctx.strokeStyle = colour;
+    ctx.fillStyle = colour;
+
+    if (d.contour2d && d.contour2d.length > 2) {
+      ctx.beginPath();
+      d.contour2d.forEach(([u, v], k) => {
+        const px = rect.x + u * sx;
+        const py = rect.y + v * sy;
+        if (k === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
+      ctx.closePath();
+      ctx.fillStyle = isAimed ? "rgba(255, 213, 79, 0.18)" : "rgba(124, 247, 196, 0.10)";
+      ctx.fill();
+      ctx.strokeStyle = colour;
+      ctx.lineWidth = isAimed ? 4 : 2;
+      ctx.stroke();
+    } else {
+      const [x1, y1, x2, y2] = d.box;
+      ctx.lineWidth = 3;
+      ctx.strokeRect(rect.x + x1 * sx, rect.y + y1 * sy, (x2 - x1) * sx, (y2 - y1) * sy);
+    }
+
+    const [x1, y1] = d.box;
+    ctx.fillStyle = colour;
+    ctx.fillText(d.label, rect.x + x1 * sx + 2, Math.max(rect.y + y1 * sy - 4, 14));
+  });
+}
+
+// --- helpers --------------------------------------------------------------
+function setStatus(text: string, scanning = false) {
+  statusEl.textContent = text;
+  statusEl.classList.toggle("busy", scanning);
+}
+
+function setBusy(value: boolean) {
+  busy = value;
+  reticle.classList.toggle("scanning", value);
+}
+
+const ms = (v?: number) => (v == null ? "-" : `${v.toFixed(0)}ms`);
+
+async function init() {
+  await loadMethods();
+  await startCamera();
+
+  window.addEventListener("pointerdown", onPointerDown);
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp);
+  window.addEventListener("pointercancel", onPointerUp);
+  window.addEventListener("resize", () => {
+    layoutOverlay();
+    if (wheelOpen) buildWheel();
+  });
+  video.addEventListener("loadedmetadata", layoutOverlay);
+}
+
+void init();

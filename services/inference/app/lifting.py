@@ -113,6 +113,17 @@ def quat_from_matrix(m: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
+def contour2d(mask: np.ndarray, max_points: int = 48) -> list[list[float]]:
+    """Resampled mask boundary in image pixels (closed polyline)."""
+    contours, _ = cv2.findContours(
+        mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if not contours:
+        return []
+    boundary = max(contours, key=cv2.contourArea).reshape(-1, 2)
+    return _resample(boundary, max_points).tolist()
+
+
 def contour_from_mask(
     mask: np.ndarray,
     depth: np.ndarray,
@@ -124,19 +135,14 @@ def contour_from_mask(
       contour2d  - Nx2 boundary points in image pixels (closed polyline)
       contourCam - Nx3 same points unprojected to camera space
     """
-    contours, _ = cv2.findContours(
-        mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
-    if not contours:
+    pts = contour2d(mask, max_points)
+    if not pts:
         return [], []
-    boundary = max(contours, key=cv2.contourArea).reshape(-1, 2)
-    pts = _resample(boundary, max_points)
 
     fx, fy, cx, cy = intr
     h, w = mask.shape
     # Fall back to the object's median depth where the boundary depth is bad.
     med = float(np.median(depth[mask])) if mask.any() else 0.0
-    contour2d: list[list[float]] = []
     contour_cam: list[list[float]] = []
     for u, v in pts:
         ui = int(np.clip(u, 0, w - 1))
@@ -144,9 +150,8 @@ def contour_from_mask(
         z = float(depth[vi, ui])
         if not np.isfinite(z) or z <= 0:
             z = med
-        contour2d.append([float(u), float(v)])
         contour_cam.append([(u - cx) * z / fx, (v - cy) * z / fy, z])
-    return contour2d, contour_cam
+    return pts, contour_cam
 
 
 def _resample(contour_xy: np.ndarray, n: int) -> np.ndarray:

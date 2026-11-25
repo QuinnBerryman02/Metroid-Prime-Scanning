@@ -28,6 +28,8 @@ class Detection(BaseModel):
     score: float
     # [x1, y1, x2, y2] in pixels of the submitted image.
     box: list[float]
+    # Mask boundary in image pixels (closed polyline).
+    contour2d: list[list[float]] | None = None
     mask: Mask | None = None
 
 
@@ -75,6 +77,8 @@ class ScanResponse(BaseModel):
     frameId: str
     width: int
     height: int
+    method: str = ""
+    kind: str = ""
     detections: list[Detection]
     aimed: Aimed | None = None
     depth: DepthResult | None = None
@@ -95,9 +99,7 @@ class ScanRequest(BaseModel):
     frameId: str = ""
     aimX: float = 0.5
     aimY: float = 0.5
-    # "scan" = detect + segment + lift; "depth" = depth map only.
-    mode: Literal["scan", "depth"] = "scan"
-    # Override the server's segmenter for this request.
-    segmenter: Literal["sam2", "yolo11"] | None = None
+    # Which wheel method to run (see GET /methods).
+    method: str = "yolo"
     # Horizontal FOV in degrees; falls back to the server default when omitted.
     fovDeg: float | None = None

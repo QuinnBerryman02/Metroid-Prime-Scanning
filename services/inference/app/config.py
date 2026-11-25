@@ -6,32 +6,49 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent  # services/inference
 
-# Path to the YOLO weights (.pt) - the OpenVINO export is derived from it.
-MODEL_PATH = os.environ.get("MODEL_PATH", str(ROOT / "yolo11n.pt"))
 
-# Ultralytics device: "xpu" (Intel iGPU), "npu", "intel:cpu", or "cpu".
-DEVICE = os.environ.get("OV_DEVICE", "xpu")
+def _has_openvino_gpu() -> bool:
+    try:
+        import openvino as ov
 
-# Export to OpenVINO on startup if we're targeting an Intel accelerator.
+        return "GPU" in ov.Core().available_devices
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def resolve_device() -> str:
+    """Ultralytics device string: 'xpu' when the Intel iGPU is usable, else 'cpu'.
+
+    `OV_DEVICE` forces a value (e.g. "cpu", "npu"); the default "auto" picks the
+    iGPU when OpenVINO can see it.
+    """
+    explicit = os.environ.get("OV_DEVICE", "auto")
+    if explicit.lower() not in ("", "auto"):
+        return explicit
+    return "xpu" if _has_openvino_gpu() else "cpu"
+
+
+# Ultralytics/OpenVINO device: "xpu" (Intel iGPU) / "npu" / "cpu" / "auto".
+DEVICE = resolve_device()
+
+# Export YOLO-style models to OpenVINO when targeting an Intel accelerator.
 EXPORT_OPENVINO = os.environ.get("EXPORT_OPENVINO", "1") == "1"
 
 IMGSZ = int(os.environ.get("IMGSZ", "640"))
 CONF = float(os.environ.get("CONF", "0.25"))
+DETECT_MODEL = os.environ.get("MODEL_PATH", str(ROOT / "yolo11n.pt"))
 
-# --- Stage B: segmentation + depth (lifting) ---
-# Which segmenter to use for the aimed object:
-#   "sam2"   - SAM 2.1 (best masks, CPU, ~2.5 s)
-#   "yolo11" - YOLO11n-seg (class-aware, OpenVINO iGPU, ~0.1 s)
-SEGMENTER = os.environ.get("SEGMENTER", "sam2")
-
-# SAM weights (a local path wins over a bare name, which Ultralytics downloads).
-SAM_MODEL = os.environ.get("SAM_MODEL", str(ROOT / "notebooks" / "sam2.1_t.pt"))
-SAM_DEVICE = os.environ.get("SAM_DEVICE", "cpu")
-
-# YOLO11 segmentation weights for the "yolo11" segmenter (runs on DEVICE).
+# --- selectable methods (the radial wheel) -------------------------------
+# Paths to the weights. Missing local files fall back to an Ultralytics
+# download (bare name). SAM/SAM2 run on CPU (PyTorch); FastSAM/YOLO are
+# OpenVINO-accelerated on the iGPU.
+# MobileSAM - a SAM1 variant that's actually usable on CPU (sam_b.pt is ~15 s/scan).
+SAM_MODEL = os.environ.get("SAM_MODEL", str(ROOT / "notebooks" / "mobile_sam.pt"))
+SAM2_MODEL = os.environ.get("SAM2_MODEL", str(ROOT / "notebooks" / "sam2.1_t.pt"))
+FASTSAM_MODEL = os.environ.get("FASTSAM_MODEL", str(ROOT / "notebooks" / "FastSAM-s.pt"))
 YOLO_SEG_MODEL = os.environ.get("YOLO_SEG_MODEL", str(ROOT / "yolo11n-seg.pt"))
 
-# Depth Anything V2 (exported to OpenVINO on first run).
+# --- depth (Depth Anything V2, exported to OpenVINO) ---------------------
 DEPTH_MODEL = os.environ.get(
     "DEPTH_MODEL", "depth-anything/Depth-Anything-V2-Small-hf"
 )
@@ -43,7 +60,3 @@ DEPTH_IR = os.environ.get(
 
 # Horizontal field of view used to build intrinsics (overridable per request).
 FOV_DEG = float(os.environ.get("FOV_DEG", "60"))
-
-# Toggle the extra models. Detection still works with both off.
-SEGMENT_ENABLED = os.environ.get("SEGMENT", "1") == "1"
-DEPTH_ENABLED = os.environ.get("DEPTH", "1") == "1"

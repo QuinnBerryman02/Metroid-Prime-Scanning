@@ -65,10 +65,25 @@ app.get("/health", async () => ({
 
 app.get("/world", async () => ({ objects: [...world.values()] }));
 
+/** The wheel's method registry, straight from the inference service. */
+app.get("/methods", async (req, reply) => {
+  try {
+    const res = await fetch(`${INFERENCE_URL}/methods`);
+    if (!res.ok) {
+      reply.code(502);
+      return { error: `inference ${res.status}` };
+    }
+    return await res.json();
+  } catch (e) {
+    req.log.error({ err: e }, "inference unreachable");
+    reply.code(502);
+    return { error: `inference unreachable: ${String(e)}` };
+  }
+});
+
 /**
  * Forward a keyframe to the inference service. The phone posts here (via the
  * Vite `/api` proxy) so it only ever talks to the gateway.
- * Stage A: detection boxes. Stage B will add lifted camera-space geometry.
  */
 app.post("/scan", async (req, reply) => {
   const body = req.body as ScanRequest | undefined;

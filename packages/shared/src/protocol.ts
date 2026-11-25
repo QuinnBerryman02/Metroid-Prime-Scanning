@@ -31,8 +31,24 @@ export interface Detection {
   score: number;
   /** [x1, y1, x2, y2] in pixels of the submitted (downscaled) image. */
   box: [number, number, number, number];
+  /** Mask boundary in image pixels (closed polyline). */
+  contour2d?: [number, number][];
   /** Optional per-pixel mask, RLE or base64-PNG, in the same image space. */
   mask?: { encoding: "rle" | "png"; data: string };
+}
+
+/** One entry in the radial-wheel method registry (`GET /methods`). */
+export interface MethodInfo {
+  id: string;
+  label: string;
+  kind: "prompt" | "detect" | "depth";
+  device: string;
+  available: boolean;
+}
+
+export interface MethodsResponse {
+  device: string;
+  methods: MethodInfo[];
 }
 
 /** Oriented bounding box in camera space (Stage B). */
@@ -74,10 +90,8 @@ export interface ScanRequest {
   frameId?: string;
   aimX?: number;
   aimY?: number;
-  /** "scan" = detect + segment + lift; "depth" = depth map only. */
-  mode?: "scan" | "depth";
-  /** Override the server's segmenter for this request. */
-  segmenter?: "sam2" | "yolo11";
+  /** Which wheel method to run (see `MethodInfo`). */
+  method?: string;
   fovDeg?: number;
 }
 
@@ -86,6 +100,8 @@ export interface ScanResult {
   frameId: string;
   width: number;
   height: number;
+  method: string;
+  kind: "prompt" | "detect" | "depth";
   detections: Detection[];
   aimed: Aimed | null;
   depth?: DepthResult | null;
