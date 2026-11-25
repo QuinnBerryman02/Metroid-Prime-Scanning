@@ -2,27 +2,46 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
-    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Metroid Scan</title>
     <style>
       :root { color-scheme: dark; }
-      html, body { margin: 0; height: 100%; overflow: hidden; background: #05080a; }
-      #app { width: 100%; height: 100%; touch-action: none; }
-      #hud {
-        position: fixed; inset: 0; pointer-events: none;
-        display: flex; align-items: center; justify-content: center;
-      }
-      #reticule { width: 36px; height: 36px; border: 2px solid #7cf7c4; border-radius: 50%; opacity: 0.8; }
-      #overlay { position: fixed; inset: 0; pointer-events: none; }
+      html, body { margin: 0; min-height: 100%; background: #05080a; color: #d7e2e6;
+        font: 15px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      main { max-width: 720px; margin: 0 auto; padding: 48px 20px; }
+      h1 { color: #fff; font-size: 22px; margin: 0 0 4px; }
+      p.sub { color: #7f959c; margin: 0 0 28px; }
+      .cards { display: grid; gap: 14px; }
+      a.card { display: block; text-decoration: none; color: inherit;
+        border: 1px solid #1e3a44; border-radius: 14px; padding: 18px 20px;
+        background: linear-gradient(180deg, #0c1a20, #091318); }
+      a.card:hover { border-color: #1e7a5f; }
+      a.card.disabled { opacity: .45; pointer-events: none; }
+      .card h2 { margin: 0 0 4px; font-size: 16px; color: #7cf7c4; }
+      .card span { color: #8aa0a8; font-size: 13px; }
+      #support-note { margin-top: 22px; font-size: 13px; color: #ffd54f; }
     </style>
   </head>
   <body>
-    <canvas id="app"></canvas>
-    <canvas id="overlay"></canvas>
-    <div id="hud"><div id="reticule"></div></div>
+    <main>
+      <h1>Metroid Scan</h1>
+      <p class="sub">Environment scanning prototype</p>
+      <div class="cards">
+        <a class="card" id="ar-link" href="/ar.html">
+          <h2>Mobile AR scan visor &rarr;</h2>
+          <span>Use the phone camera, scan objects, anchor overlays. (Android Chrome)</span>
+        </a>
+        <a class="card" href="/viewer.html">
+          <h2>Desktop viewer &rarr;</h2>
+          <span>Watch the reconstructed environment and live device pose.</span>
+        </a>
+        <a class="card" href="/capabilities.html">
+          <h2>WebXR capability test &rarr;</h2>
+          <span>Check what this device supports (depth, planes, anchors, ...).</span>
+        </a>
+      </div>
+      <div id="support-note">Checking device support&hellip;</div>
+    </main>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

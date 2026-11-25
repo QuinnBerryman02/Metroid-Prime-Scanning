@@ -73,6 +73,8 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        ar: fileURLToPath(new URL("./ar.html", import.meta.url)),
+        viewer: fileURLToPath(new URL("./viewer.html", import.meta.url)),
         capabilities: fileURLToPath(
           new URL("./capabilities.html", import.meta.url),
         ),

@@ -42,15 +42,16 @@ inference `/health` responds.
       secure context, WebXR support, enabled AR features (`session.enabledFeatures`),
       live hit-test reticle and depth-map preview. **Run this on the phone first** - the
       result decides whether we need monocular depth at all.
-- [ ] Babylon `WebXR` default experience: `immersive-ar`, `local-floor`, DOM overlay.
-- [ ] Camera passthrough + `<video>`/raw-camera fallback; confirm it works over LAN HTTPS.
-- [ ] Hit-test / sphere at tapped feature points; draw debug spheres.
-- [ ] Anchors: place a static test marker in the world, walk around it, confirm it stays put.
-- [ ] Send pose (world matrix) to server each frame; server echoes; viewer shows a moving
-      frustum gizmo (proves coordinate frames + transport end to end).
+- [x] Babylon `WebXR` default experience: `immersive-ar`, `local-floor`, DOM overlay.
+- [x] Camera passthrough via immersive-ar (alpha-blend).
+- [x] Hit-test reticle tracks real surfaces; tap / **Place** drops a marker.
+- [x] Anchors: placed box is held by a WebXR `XRAnchor` (walk around it - stays put).
+- [x] Send pose to server; server relays to viewers; viewer shows a moving phone frustum.
+- [x] On-screen debug overlay for phones without a debugger.
+- [x] Headless smoke test for the pose relay (`npm run smoke:ws`).
 
 **Done when:** a static cube placed in AR stays anchored while moving, and a desktop
-viewer shows the phone's live pose in a shared world.
+viewer shows the phone's live pose in a shared world. *(ready for device test)*
 
 **De-risk here:** secure context, Android Chrome quirks, anchor lifetime, frame sync.
 

@@ -14,7 +14,8 @@
     "dev:client": "npm run dev --workspace apps/client",
     "dev:inference": "cd services/inference && uvicorn app.main:app --reload --port 8000",
     "build": "npm run build --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "smoke:ws": "npm run smoke --workspace @metroid-scan/server"
   },
   "engines": {
     "node": ">=20"

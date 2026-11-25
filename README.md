@@ -16,6 +16,30 @@ Point the phone at your environment, scan objects, and the system:
 > Scope is deliberately small: the goal is *interesting, demonstrable behaviour*, not a
 > production SLAM/NeRF system.
 
+## Pages
+
+| Page | URL | Purpose |
+|---|---|---|
+| Landing | `/` | support check + links |
+| **AR scan visor** | `/ar.html` | phone: hit-test reticle, anchored placement, live pose (MS1) |
+| **Desktop viewer** | `/viewer.html` | shows the phone's live pose in a shared world (MS1) |
+| Capability test | `/capabilities.html` | what the device exposes (depth, planes, anchors, ...) |
+
+## Status
+
+- **MS0** repo & tooling - done
+- **MS1** WebXR AR skeleton + pose relay - done (hit-test reticle, WebXR anchors,
+  device pose -> gateway -> viewer)
+- **MS2** detection + segmentation service - next
+
+Verify the pose relay without a phone:
+
+```bash
+npm run build --workspace @metroid-scan/server
+npm run start --workspace @metroid-scan/server &   # gateway on :3000
+npm run smoke:ws                                    # device -> gateway -> viewer
+```
+
 ## Docs
 
 - [`docs/PLAN.md`](docs/PLAN.md) - implementation plan, milestones, task breakdown

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Metroid Scan - Viewer</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #05080a;
+        font: 13px/1.4 ui-monospace, Menlo, monospace; color: #d7e2e6; }
+      #app { position: fixed; inset: 0; width: 100%; height: 100%; display: block;
+        touch-action: none; }
+      #status { position: fixed; left: 12px; top: 12px; padding: 10px 12px;
+        background: rgba(4,12,15,.78); border: 1px solid #1e7a5f; border-radius: 10px;
+        white-space: pre-wrap; pointer-events: none; }
+      #back { position: fixed; right: 12px; top: 12px; color: #7cf7c4;
+        text-decoration: none; padding: 8px 12px; border: 1px solid #1e3a44;
+        border-radius: 8px; background: rgba(4,12,15,.78); }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+    <div id="status">connecting…</div>
+    <a id="back" href="/">&larr; home</a>
+    <script type="module" src="/src/viewer.ts"></script>
+  </body>
+</html>

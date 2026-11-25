@@ -100,6 +100,19 @@ export interface HelloMsg {
   role: "device" | "viewer";
 }
 
+/** Device -> server: pose of the phone camera, streamed at a modest rate. */
+export interface PoseMsg {
+  type: "pose";
+  sessionId: string;
+  /** Camera position in the (Babylon) reference space, metres. */
+  position: Vec3;
+  /** Camera orientation in the reference space. */
+  quaternion: Quat;
+  /** Camera forward unit vector in the reference space. */
+  forward: Vec3;
+  tracking: "tracked" | "lost";
+}
+
 // ---------------------------------------------------------------------------
 // Server -> Client
 // ---------------------------------------------------------------------------
@@ -117,15 +130,29 @@ export interface ScanResultMsg {
   objects: WorldObject[];
 }
 
+/** Server -> viewer: current pose of a connected device. */
+export interface PoseBroadcastMsg extends Omit<PoseMsg, "type"> {
+  type: "pose";
+}
+
+/** Server -> any: a device came online / went offline. */
+export interface SessionEventMsg {
+  type: "session_event";
+  sessionId: string;
+  status: "connected" | "disconnected";
+}
+
 export interface ErrorMsg {
   type: "error";
   message: string;
 }
 
-export type ClientToServer = ScanFrameMsg | RescanMsg | HelloMsg;
+export type ClientToServer = ScanFrameMsg | RescanMsg | HelloMsg | PoseMsg;
 export type ServerToClient =
   | WorldDeltaMsg
   | ScanResultMsg
+  | PoseBroadcastMsg
+  | SessionEventMsg
   | ErrorMsg;
 
 /** Per-class display colours (Metroid-ish palette). */

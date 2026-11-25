@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
+    <title>Metroid Scan - AR</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #05080a;
+        font: 14px/1.4 ui-monospace, Menlo, monospace; color: #d7e2e6; }
+      #app { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none;
+        display: block; }
+
+      /* DOM overlay shown over the camera during the AR session */
+      #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+      #reticle { position: absolute; left: 50%; top: 50%; width: 46px; height: 46px;
+        margin: -23px 0 0 -23px; border: 2px solid rgba(124,247,196,.85);
+        border-radius: 50%; }
+      #reticle::after { content: ""; position: absolute; left: 50%; top: 50%;
+        width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%;
+        background: #7cf7c4; }
+      #status { position: absolute; left: 10px; top: 10px; padding: 8px 10px;
+        background: rgba(4,12,15,.72); border: 1px solid #1e7a5f; border-radius: 10px;
+        font-size: 12px; white-space: pre-wrap; line-height: 1.4; }
+      #controls { position: absolute; left: 0; right: 0; bottom: 18px;
+        display: flex; gap: 10px; justify-content: center; }
+      #controls button { pointer-events: auto; font: inherit; padding: 14px 20px;
+        border-radius: 12px; border: 1px solid #2b4149; background: #12242b;
+        color: #eaf6f3; }
+      #controls button:disabled { opacity: .4; }
+      #placeBtn { background: #0e3a2f; border-color: #1e7a5f; }
+
+      /* Pre-session overlay */
+      #start { position: fixed; inset: 0; z-index: 20; display: flex;
+        flex-direction: column; align-items: center; justify-content: center;
+        gap: 18px; background: #05080a; text-align: center; padding: 24px; }
+      #start h1 { margin: 0; font-size: 20px; color: #7cf7c4; }
+      #start p { margin: 0; color: #8aa0a8; max-width: 30ch; }
+      #startBtn { font: inherit; font-size: 16px; padding: 16px 28px; border-radius: 12px;
+        border: 1px solid #1e7a5f; background: #0e3a2f; color: #eaf6f3; }
+      #startBtn:disabled { opacity: .5; }
+      #back { color: #4a5f66; text-decoration: none; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <canvas id="app"></canvas>
+
+    <div id="hud">
+      <div id="status">booting…</div>
+      <div id="reticle"></div>
+      <div id="controls">
+        <button id="placeBtn" disabled>Place</button>
+        <button id="clearBtn">Clear</button>
+        <button id="exitBtn">Exit</button>
+      </div>
+    </div>
+
+    <div id="start">
+      <h1>SCAN VISOR</h1>
+      <p>Point at the floor and tap <b>Place</b> to drop an anchored marker.</p>
+      <button id="startBtn" disabled>Checking support…</button>
+      <a id="back" href="/">&larr; back</a>
+    </div>
+
+    <script type="module" src="/src/ar.ts"></script>
+  </body>
+</html>
