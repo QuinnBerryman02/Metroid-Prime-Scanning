@@ -152,6 +152,22 @@ async function probeEnvironment(): Promise<boolean> {
 
 let session: XRSession | null = null;
 
+/**
+ * `session.depthUsage` / `depthDataFormat` *throw* (InvalidStateError) when the
+ * session was not created with the `depth-sensing` feature - they are not just
+ * undefined. Always read them defensively.
+ */
+function readDepthProp(
+  s: XRSession,
+  prop: "depthUsage" | "depthDataFormat",
+): string | null {
+  try {
+    return (s as unknown as Record<string, string | undefined>)[prop] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function startSessionTest() {
   const xrSystem = (navigator as Navigator & { xr: XRSystem }).xr;
   runBtn.disabled = true;
@@ -188,9 +204,8 @@ async function startSessionTest() {
     report.session = {
       interactionMode: s.interactionMode ?? null,
       environmentBlendMode: s.environmentBlendMode ?? null,
-      depthUsage: (s as XRSession & { depthUsage?: string }).depthUsage ?? null,
-      depthDataFormat:
-        (s as XRSession & { depthDataFormat?: string }).depthDataFormat ?? null,
+      depthUsage: readDepthProp(s, "depthUsage"),
+      depthDataFormat: readDepthProp(s, "depthDataFormat"),
     };
     log(`session meta = ${JSON.stringify(report.session)}`);
 
