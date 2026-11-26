@@ -57,6 +57,7 @@ npm run smoke:ws                                    # pose + anchor relay
 - [`docs/RECONSTRUCTION.md`](docs/RECONSTRUCTION.md) - the fused world-map plan (keyframes -> voxel/TSDF -> objects)
 - [`docs/SLAM_SURVEY.md`](docs/SLAM_SURVEY.md) - SLAM/odometry options (why ARCore pose + our own fusion)
 - [`docs/ARCORE_SLAM.md`](docs/ARCORE_SLAM.md) - how ARCore's SLAM/VIO actually works, and what WebXR does/doesn't expose
+- [`docs/FUSION.md`](docs/FUSION.md) - the fusion techniques (voxel accumulation, TSDF) and the papers to read
 - [`docs/MODELS.md`](docs/MODELS.md) - model choices (iGPU-friendly) and why
 
 ## Layout
