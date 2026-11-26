@@ -24,8 +24,13 @@ import { WebXRFeatureName } from "@babylonjs/core/XR/webXRFeaturesManager";
 import "@babylonjs/core/XR/features/WebXRHitTest";
 import "@babylonjs/core/XR/features/WebXRAnchorSystem";
 import "@babylonjs/core/XR/features/WebXRDOMOverlay";
+import "@babylonjs/core/XR/features/WebXRPlaneDetector";
 import type { WebXRHitTest } from "@babylonjs/core/XR/features/WebXRHitTest";
 import type { WebXRAnchorSystem } from "@babylonjs/core/XR/features/WebXRAnchorSystem";
+import type {
+  IWebXRPlane,
+  WebXRPlaneDetector,
+} from "@babylonjs/core/XR/features/WebXRPlaneDetector";
 import type { Camera } from "@babylonjs/core/Cameras/camera";
 import type { Obb, Quat, ScanResult, Vec3 } from "@metroid-scan/shared";
 import { installDebugOverlay, log } from "./lib/debug";
@@ -67,6 +72,60 @@ const gateway = new GatewayClient("device", sessionId, {
 });
 gateway.connect();
 
+// --- ARCore planes ----------------------------------------------------------
+// Plane detection is ARCore's free environment model: metric polygons for the
+// floor / walls / tables. We stream them to the viewer (and, later, to the
+// server as the structure set for object segmentation). Updates can fire many
+// times per frame, so throttle them.
+const PLANE_UPDATE_MS = 250;
+const planeSentAt = new Map<number, number>();
+
+/** Centroid + robust unit normal (Newell's method) of a planar polygon. */
+function planeCenterNormal(poly: Vector3[]): { center: Vector3; normal: Vector3 } {
+  const center = new Vector3(0, 0, 0);
+  for (const p of poly) center.addInPlace(p);
+  center.scaleInPlace(1 / Math.max(1, poly.length));
+  const n = new Vector3(0, 0, 0);
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i]!;
+    const b = poly[(i + 1) % poly.length]!;
+    n.x += (a.y - b.y) * (a.z + b.z);
+    n.y += (a.z - b.z) * (a.x + b.x);
+    n.z += (a.x - b.x) * (a.y + b.y);
+  }
+  if (n.lengthSquared() > 1e-9) n.normalize();
+  else n.set(0, 1, 0);
+  return { center, normal: n };
+}
+
+function sendPlane(action: "added" | "updated" | "removed", plane: IWebXRPlane) {
+  const poly = plane.polygonDefinition;
+  if (!poly || poly.length < 3) return;
+  const now = performance.now();
+  if (action === "updated" && now - (planeSentAt.get(plane.id) ?? 0) < PLANE_UPDATE_MS) {
+    return;
+  }
+  planeSentAt.set(plane.id, now);
+  if (action === "removed") planeSentAt.delete(plane.id);
+  const { center, normal } = planeCenterNormal(poly);
+  const orientation =
+    ((plane.xrPlane as unknown as { orientation?: string })?.orientation as
+      | "horizontal"
+      | "vertical"
+      | undefined) ?? "unknown";
+  gateway.sendPlane({
+    id: plane.id,
+    action,
+    orientation,
+    polygon: poly.map((p) => [p.x, p.y, p.z] as Vec3),
+    center: [center.x, center.y, center.z],
+    normal: [normal.x, normal.y, normal.z],
+  });
+  if (action !== "updated") {
+    log(`plane ${action} #${plane.id} ${orientation} (${poly.length}pts)`);
+  }
+}
+
 // --- Babylon ----------------------------------------------------------------
 const engine = new Engine(canvas, true, { stencil: true });
 const scene = new Scene(engine);
@@ -97,6 +156,7 @@ reticle.isVisible = false;
 let xr: WebXRDefaultExperience | null = null;
 let hitTest: WebXRHitTest | null = null;
 let anchorSystem: WebXRAnchorSystem | null = null;
+let planeDetector: WebXRPlaneDetector | null = null;
 let currentHit: { position: Vector3; quaternion: Quaternion } | null = null;
 let lastHitCount = -1;
 // Independent hit-test probe so the report can tell us whether Babylon's
@@ -290,8 +350,20 @@ async function setupXr() {
   anchorSystem = fm.enableFeature(WebXRFeatureName.ANCHOR_SYSTEM, "latest", {
     doNotRemoveAnchorsOnSessionEnded: false,
   }) as WebXRAnchorSystem | null;
+  planeDetector = fm.enableFeature(WebXRFeatureName.PLANE_DETECTION, "latest", {}) as
+    | WebXRPlaneDetector
+    | null;
+  if (planeDetector) {
+    planeDetector.onPlaneAddedObservable.add((p) => sendPlane("added", p));
+    planeDetector.onPlaneUpdatedObservable.add((p) => sendPlane("updated", p));
+    planeDetector.onPlaneRemovedObservable.add((p) => sendPlane("removed", p));
+  }
 
-  log(`hit-test: ${hitTest ? "on" : "OFF"} | anchors: ${anchorSystem ? "on" : "OFF"}`);
+  log(
+    `hit-test: ${hitTest ? "on" : "OFF"} | anchors: ${anchorSystem ? "on" : "OFF"} | planes: ${
+      planeDetector ? "on" : "OFF"
+    }`,
+  );
 
   hitTest?.onHitTestResultObservable.add((results) => {
     const n = results.length;

@@ -112,6 +112,9 @@ Single-view lifting (Stage B) - **done, now the close-up path**:
 
 Fused reconstruction (the new work):
 
+- [x] ARCore **planes** streamed device -> gateway -> viewer and rendered as
+      coloured polygons (toggle with `P`). This is the `polygon`/`orientation`
+      data MS3.3 needs, plus a live sanity check on the shared world frame.
 - [ ] **MS3.0** keyframe streaming (JPEG + pose + intrinsics + ARCore planes).
 - [ ] **MS3.1** metric scale: affine fit `Z = a·(1/d_rel) + b` from ARCore planes.
 - [ ] **MS3.2** voxel fusion in the ARCore frame; viewer renders the live cloud.

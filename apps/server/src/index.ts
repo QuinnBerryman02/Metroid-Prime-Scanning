@@ -16,6 +16,7 @@ import type {
   AnchorClearMsg,
   AnchorMsg,
   ClientToServer,
+  PlaneMsg,
   PoseBroadcastMsg,
   ScanRequest,
   ScanResult,
@@ -40,6 +41,9 @@ const world = new Map<string, WorldObject>();
 const clients = new Map<WebSocket, ClientState>();
 const latestPose = new Map<string, PoseBroadcastMsg>();
 const anchors = new Map<string, AnchorMsg[]>();
+// Latest plane per (session, id), replayed to viewers so a late join sees the
+// environment ARCore has already mapped.
+const planes = new Map<string, Map<number, PlaneMsg>>();
 
 const app = Fastify({ logger: true, bodyLimit: 20 * 1024 * 1024 });
 await app.register(cors, { origin: true });
@@ -130,6 +134,7 @@ app.register(async (f) => {
     // Replay known device poses + anchors to a newly connected viewer.
     for (const pose of latestPose.values()) send(socket, pose);
     for (const list of anchors.values()) for (const a of list) send(socket, a);
+    for (const list of planes.values()) for (const a of list.values()) send(socket, a);
 
     socket.on("message", (raw: Buffer, isBinary: boolean) => {
       if (isBinary) return; // binary frames handled in a later milestone
@@ -174,6 +179,14 @@ app.register(async (f) => {
           broadcast(clear, "viewer");
           break;
         }
+        case "plane": {
+          const perSession = planes.get(msg.sessionId) ?? new Map<number, PlaneMsg>();
+          if (msg.action === "removed") perSession.delete(msg.id);
+          else perSession.set(msg.id, msg);
+          planes.set(msg.sessionId, perSession);
+          broadcast(msg, "viewer");
+          break;
+        }
         case "scan_frame":
         case "rescan":
           // TODO(MS2/MS3): forward to inference, fuse results, emit world deltas.
@@ -189,6 +202,13 @@ app.register(async (f) => {
       clients.delete(socket);
       if (state?.role === "device") {
         latestPose.delete(state.sessionId);
+        const perSession = planes.get(state.sessionId);
+        if (perSession) {
+          for (const p of perSession.values()) {
+            broadcast({ ...p, action: "removed" }, "viewer");
+          }
+          planes.delete(state.sessionId);
+        }
         broadcast(
           {
             type: "session_event",

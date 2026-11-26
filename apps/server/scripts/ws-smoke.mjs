@@ -86,9 +86,47 @@ device.send(JSON.stringify({ type: "anchor_clear", sessionId: "smoke-device" }))
 const gotClear = await rx;
 check("anchor clear broadcast", gotClear.sessionId === "smoke-device");
 
+// plane relay
+const plane = {
+  type: "plane",
+  sessionId: "smoke-device",
+  id: 3,
+  action: "added",
+  orientation: "vertical",
+  polygon: [
+    [0, 0, 0],
+    [2, 0, 0],
+    [2, 2, 0],
+    [0, 2, 0],
+  ],
+  center: [1, 1, 0],
+  normal: [0, 0, -1],
+};
+rx = waitFor(viewer, "plane");
+device.send(JSON.stringify(plane));
+const gotPlane = await rx;
+check(
+  "plane relay",
+  gotPlane.id === 3 && gotPlane.orientation === "vertical" && gotPlane.polygon.length === 4,
+);
+
+// plane replay for a late-joining viewer
+const late2 = await open("viewer");
+const replayedPlane = await waitFor(late2, "plane");
+check("plane replay to late viewer", replayedPlane.id === 3 && replayedPlane.action === "added");
+
+// planes are live: a device disconnect removes them from viewers
+rx = waitFor(viewer, "plane");
 device.close();
+const removedPlane = await rx;
+check(
+  "plane removed on device disconnect",
+  removedPlane.id === 3 && removedPlane.action === "removed",
+);
+
 viewer.close();
 late.close();
+late2.close();
 
 const ok = results.every(([, c]) => c);
 console.log(ok ? "\nALL PASS" : "\nFAILURES");

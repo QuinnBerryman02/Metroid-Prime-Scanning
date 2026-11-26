@@ -23,6 +23,7 @@ export interface GatewayHandlers {
   onAnchorClear?: (
     msg: Extract<ServerToClient, { type: "anchor_clear" }>,
   ) => void;
+  onPlane?: (msg: Extract<ServerToClient, { type: "plane" }>) => void;
   onStatus?: (status: GatewayStatus, detail?: string) => void;
 }
 
@@ -68,6 +69,7 @@ export class GatewayClient {
       else if (msg.type === "session_event") this.handlers.onSession?.(msg);
       else if (msg.type === "anchor") this.handlers.onAnchor?.(msg);
       else if (msg.type === "anchor_clear") this.handlers.onAnchorClear?.(msg);
+      else if (msg.type === "plane") this.handlers.onPlane?.(msg);
     };
   }
 
@@ -118,6 +120,12 @@ export class GatewayClient {
 
   sendAnchorClear() {
     this.send({ type: "anchor_clear", sessionId: this.sessionId });
+  }
+
+  sendPlane(
+    msg: Omit<Extract<ClientToServer, { type: "plane" }>, "type" | "sessionId">,
+  ) {
+    this.send({ type: "plane", sessionId: this.sessionId, ...msg });
   }
 
   close() {

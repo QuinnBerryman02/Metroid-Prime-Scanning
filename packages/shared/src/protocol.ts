@@ -205,6 +205,25 @@ export interface AnchorClearMsg {
   sessionId: string;
 }
 
+/**
+ * Device -> server -> viewer: one ARCore-detected plane (the free environment
+ * model WebXR hands us - polygon is in world/Babylon space, metres).
+ */
+export interface PlaneMsg {
+  type: "plane";
+  sessionId: string;
+  /** Babylon-assigned plane id, stable within a session. */
+  id: number;
+  action: "added" | "updated" | "removed";
+  orientation: "horizontal" | "vertical" | "unknown";
+  /** Closed polygon, world space (metres). */
+  polygon: Vec3[];
+  /** Polygon centroid, world space. */
+  center: Vec3;
+  /** World-space unit normal. */
+  normal: Vec3;
+}
+
 // ---------------------------------------------------------------------------
 // Server -> Client
 // ---------------------------------------------------------------------------
@@ -245,13 +264,15 @@ export type ClientToServer =
   | HelloMsg
   | PoseMsg
   | AnchorMsg
-  | AnchorClearMsg;
+  | AnchorClearMsg
+  | PlaneMsg;
 export type ServerToClient =
   | WorldDeltaMsg
   | ScanResultMsg
   | PoseBroadcastMsg
   | AnchorMsg
   | AnchorClearMsg
+  | PlaneMsg
   | SessionEventMsg
   | ErrorMsg;
 
