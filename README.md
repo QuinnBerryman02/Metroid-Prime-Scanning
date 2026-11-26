@@ -56,6 +56,7 @@ npm run smoke:ws                                    # pose + anchor relay
 - [`docs/LIFTING.md`](docs/LIFTING.md) - how a 2D mask becomes an anchored 3D object
 - [`docs/RECONSTRUCTION.md`](docs/RECONSTRUCTION.md) - the fused world-map plan (keyframes -> voxel/TSDF -> objects)
 - [`docs/SLAM_SURVEY.md`](docs/SLAM_SURVEY.md) - SLAM/odometry options (why ARCore pose + our own fusion)
+- [`docs/ARCORE_SLAM.md`](docs/ARCORE_SLAM.md) - how ARCore's SLAM/VIO actually works, and what WebXR does/doesn't expose
 - [`docs/MODELS.md`](docs/MODELS.md) - model choices (iGPU-friendly) and why
 
 ## Layout
