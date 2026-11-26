@@ -249,9 +249,22 @@ cloud, one opinion). So the service records every keyframe:
 services/inference/recon_log/<session>/NNNN.{jpg,json}    (RECON_RECORD=1)
 ```
 
-`scripts/replay_recon.py <dir>` re-fuses the same frames under different scales,
-voxel sizes, strides and methods, caches the depth maps as `NNNN.npy` so repeat
-runs are fast, and can dump a coloured PLY (`--ply`) of any variant.
+There are two ways to consume it:
+
+1. **In the viewer** (fastest loop): the bottom-left panel lists recorded runs.
+   *Replay* drives them through the **live** gateway pipeline, so the viewer sees
+   them exactly as if a phone were walking the room - keyframes, planes, the
+   fused cloud and the pose breadcrumbs, using the same messages as a real
+   session. Backed by `GET /recon/logs`, `POST /recon/replay`,
+   `POST /recon/replay/stop` on the gateway. A replay never re-records itself.
+2. **Offline** for parameter sweeps: `scripts/replay_recon.py <dir>` re-fuses the
+   same frames under different scales, voxel sizes, strides and methods, caches
+   the depth maps as `NNNN.npy` so repeat runs are fast, and can dump a coloured
+   PLY (`--ply`) of any variant.
+
+> `recon_log/` is **user data, not scratch space**. Never `rm -rf` it in tests or
+> scripts - use a separate directory (e.g. `RECON_DIR=/tmp/recon_test`) if you
+> need a throwaway.
 
 **A caution that cost us a wrong turn.** The obvious objective - score a scale by
 how compact the fused map is - is *degenerate*: shrinking the scale always packs
