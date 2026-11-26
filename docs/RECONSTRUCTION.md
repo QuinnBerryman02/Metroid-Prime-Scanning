@@ -149,6 +149,55 @@ This *is* the noise-averaging: two noisy observations of the same surface land i
 the same voxel and average out, so the fused map is dramatically smoother than
 any single frame.
 
+### The fusion loop, concretely
+
+For each keyframe `k` (RGB `I_k`, pose `T_k` = world←camera, intrinsics `K`):
+
+```
+d = 1 / disparity(I_k)                      # relative inverse-depth
+d = median_blur(d, 5)                       # the same robustness as /scan
+Z = a_k * d + b_k                           # metric depth (fit in section 6)
+
+for (u, v) in subsample(pixels):            # every 2nd pixel ~ 150k samples
+    z = Z[v, u]
+    if not plausible(z): continue           # skip sky / far / NaN / huge steps
+    p_cam   = ( (u-cx)/fx * z, (v-cy)/fy * z, z )
+    p_world = T_k @ p_cam
+
+    key = floor(p_world / voxel)            # 2 cm voxels
+    w, mu, c = voxels[key]
+    mu = (mu*w + p_world) / (w+1)           # running mean position
+    c  = (c *w + I_k[v,u]) / (w+1)          # running mean colour
+    voxels[key] = (w+1, mu, c)
+```
+
+**Density is free; consistency is the hard part.** A 640x480 frame is ~300k
+depth samples, so a single keyframe is already dense - it is just noisy and
+one-sided. Fusion does not add samples, it makes them *agree*: N observations of
+the same patch land in the same voxel and their errors average down ~`1/sqrt(N)`.
+That is why a fused wall is smooth where a single-frame wall was jagged.
+
+### Non-axis-aligned surfaces (your sloped attic ceiling)
+
+ARCore's plane detector is **binary: horizontal or vertical**. A pitched roof is
+neither, so ARCore will never report it as a plane - which is exactly why the top
+half of your room is missing from the plane set. Depth fusion has no such
+assumption: monocular depth is just geometry, so it reconstructs the slope
+naturally. **The dense layer is strictly richer than the plane layer for anything
+not axis-aligned** - which, in an attic, is most of the interesting geometry.
+
+### What actually limits quality
+
+1. **Metric scale drift** (`a_k, b_k`) - the biggest one; a bad fit warps the
+   whole frame relative to the map.
+2. **Pose error** - a small rotation error smears a surface over `dist * angle`.
+3. **Depth-model bias** - DA V2 is trained on real photos; it degrades on
+   textureless walls, glass, and strong reflections.
+4. **Coverage** - surfaces only exist where the camera has actually looked.
+
+Note the asymmetry: 1-3 are *smooth* errors (they warp the map), while 4 is a
+*gap*. Warps are visually forgivable in an AR overlay; gaps read as holes.
+
 **Upgrade: TSDF** via `open3d.pipelines.integration.ScalableTSDFVolume`:
 
 ```python
