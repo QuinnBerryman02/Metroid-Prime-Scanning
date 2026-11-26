@@ -5,42 +5,100 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Metroid Scan - Viewer</title>
     <style>
-      :root { color-scheme: dark; }
-      html, body { margin: 0; height: 100%; overflow: hidden; background: #05080a;
-        font: 13px/1.4 ui-monospace, Menlo, monospace; color: #d7e2e6; }
+      /* Three themes, because a light point cloud needs a dark background and a
+         dark one needs a light background. `grey` is the default: it is the
+         only one where neither near-black nor near-white points disappear.
+         viewer.ts sets body.className from the `B` key. */
+      :root, body.theme-dark {
+        --bg: #05080a;
+        --panel: rgba(4,12,15,.86);
+        --panel-soft: rgba(4,12,15,.78);
+        --border: #1e3a44;
+        --border-strong: #1e7a5f;
+        --text: #d7e2e6;
+        --on-panel: #eaf6f3;
+        --dim: #8aa0a8;
+        --dim2: #6f868e;
+        --label: #b9cdd3;
+        --field: #0d1c22;
+        --field-alt: #12242b;
+        --field-border: #2b4149;
+        --accent: #7cf7c4;
+        --accent-bg: #0e3a2f;
+        color-scheme: dark;
+      }
+      body.theme-grey {
+        --bg: #3b424b;
+        --panel: rgba(32,37,43,.90);
+        --panel-soft: rgba(32,37,43,.84);
+        --border: #55606b;
+        --border-strong: #4bbf95;
+        --text: #e6ebef;
+        --on-panel: #eef2f5;
+        --dim: #a3aeb8;
+        --dim2: #8b97a1;
+        --label: #ccd4da;
+        --field: #23292f;
+        --field-alt: #2b3238;
+        --field-border: #5a6570;
+        --accent: #8ef7cd;
+        --accent-bg: #14503f;
+        color-scheme: dark;
+      }
+      body.theme-light {
+        --bg: #e8ecf0;
+        --panel: rgba(252,253,255,.94);
+        --panel-soft: rgba(252,253,255,.90);
+        --border: #b4c0ca;
+        --border-strong: #147a5c;
+        --text: #16202a;
+        --on-panel: #16202a;
+        --dim: #5a6a74;
+        --dim2: #6b7a84;
+        --label: #3d4a52;
+        --field: #ffffff;
+        --field-alt: #f1f5f8;
+        --field-border: #b4c0ca;
+        --accent: #0b6b52;
+        --accent-bg: #d6f5e8;
+        color-scheme: light;
+      }
+      html, body { margin: 0; height: 100%; overflow: hidden;
+        background: var(--bg); color: var(--text);
+        font: 13px/1.4 ui-monospace, Menlo, monospace; }
       #app { position: fixed; inset: 0; width: 100%; height: 100%; display: block;
         touch-action: none; }
       #status { position: fixed; left: 12px; top: 12px; padding: 10px 12px;
-        background: rgba(4,12,15,.78); border: 1px solid #1e7a5f; border-radius: 10px;
-        white-space: pre-wrap; pointer-events: none; }
-      #back { position: fixed; right: 12px; top: 12px; color: #7cf7c4;
-        text-decoration: none; padding: 8px 12px; border: 1px solid #1e3a44;
-        border-radius: 8px; background: rgba(4,12,15,.78); }
+        background: var(--panel-soft); border: 1px solid var(--border-strong);
+        border-radius: 10px; white-space: pre-wrap; pointer-events: none; }
+      #back { position: fixed; right: 12px; top: 12px; color: var(--accent);
+        text-decoration: none; padding: 8px 12px; border: 1px solid var(--border);
+        border-radius: 8px; background: var(--panel-soft); }
       #replay { position: fixed; left: 12px; bottom: 12px; display: flex;
         flex-direction: column; gap: 6px; padding: 8px 10px;
         max-height: 74vh; overflow-y: auto;
-        background: rgba(4,12,15,.86); border: 1px solid #1e3a44;
+        background: var(--panel); border: 1px solid var(--border);
         border-radius: 10px; }
       #replay .row { display: flex; gap: 8px; align-items: center; }
       #algoToggle { cursor: pointer; }
-      #algoSummary { color: #7cf7c4; font-size: 12px;
+      #algoSummary { color: var(--accent); font-size: 12px;
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       #algoBox { display: flex; flex-direction: column; gap: 6px; }
       /* Beats the id rule above: [hidden] only wins at equal specificity. */
       #algoBox[hidden] { display: none; }
       #params { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px;
-        align-items: center; border-top: 1px solid #1e3a44; padding-top: 7px; }
-      #params label { color: #b9cdd3; white-space: nowrap; }
+        align-items: center; border-top: 1px solid var(--border); padding-top: 7px; }
+      #params label { color: var(--label); white-space: nowrap; }
       #params input[type="number"] { width: 8ch; }
       #params input, #params select { font: inherit; padding: 3px 6px;
-        border-radius: 6px; border: 1px solid #2b4149; background: #0d1c22;
-        color: #eaf6f3; }
-      .phelp { grid-column: 2; color: #6f868e; margin: -2px 0 4px; }
+        border-radius: 6px; border: 1px solid var(--field-border);
+        background: var(--field); color: var(--on-panel); }
+      .phelp { grid-column: 2; color: var(--dim2); margin: -2px 0 4px; }
       #replay select, #replay button { font: inherit; padding: 6px 10px;
-        border-radius: 7px; border: 1px solid #2b4149; background: #12242b;
-        color: #eaf6f3; max-width: 42ch; }
-      #replayBtn { border-color: #1e7a5f; background: #0e3a2f; }
-      #replayHint { color: #8aa0a8; }
+        border-radius: 7px; border: 1px solid var(--field-border);
+        background: var(--field-alt); color: var(--on-panel); max-width: 42ch; }
+      #replayBtn { border-color: var(--border-strong); background: var(--accent-bg); }
+      #replayHint { color: var(--dim); }
     </style>
   </head>
   <body>

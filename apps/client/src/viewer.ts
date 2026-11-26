@@ -32,6 +32,33 @@ const engine = new Engine(canvas, true);
 const scene = new Scene(engine);
 scene.clearColor = new Color4(0.02, 0.03, 0.04, 1);
 
+/**
+ * Background themes. The cloud is painted with the camera's own colours, so a
+ * dark scene hides near-black points and a light one hides near-white ones -
+ * hence a mid grey in the middle, and `B` to cycle. viewer.html owns the
+ * panel colours via CSS variables under the matching body class.
+ */
+const BACKGROUNDS = {
+  dark: [0.02, 0.03, 0.04],
+  grey: [0.235, 0.259, 0.294],
+  light: [0.91, 0.925, 0.941],
+} as const;
+type BackgroundId = keyof typeof BACKGROUNDS;
+const BACKGROUND_ORDER: BackgroundId[] = ["dark", "grey", "light"];
+
+function setBackground(id: BackgroundId): BackgroundId {
+  const c = BACKGROUNDS[id];
+  scene.clearColor = new Color4(c[0], c[1], c[2], 1);
+  // The panel palette hangs off this class (see viewer.html).
+  document.body.className = `theme-${id}`;
+  try {
+    localStorage.setItem("viewer.background", id);
+  } catch {
+    /* ignore */
+  }
+  return id;
+}
+
 const camera = new ArcRotateCamera(
   "cam",
   -Math.PI / 3,
@@ -724,6 +751,35 @@ stopBtn.addEventListener("click", () => {
 });
 void loadLogs();
 void loadMethods();
+
+// --- background ---------------------------------------------------------
+// `grey` by default: it is the only theme where neither the darkest nor the
+// brightest points of a vertex-coloured cloud disappear.
+function savedBackground(): BackgroundId {
+  try {
+    const saved = localStorage.getItem("viewer.background");
+    if (saved && (BACKGROUND_ORDER as string[]).includes(saved)) {
+      return saved as BackgroundId;
+    }
+  } catch {
+    /* ignore */
+  }
+  return "grey";
+}
+
+let backgroundId = setBackground(savedBackground());
+log(`background: ${backgroundId} (B to change)`);
+
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "b" && e.key !== "B") return;
+  const t = e.target as HTMLElement | null;
+  if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
+  const next = BACKGROUND_ORDER.indexOf(backgroundId) + 1;
+  backgroundId = setBackground(
+    BACKGROUND_ORDER[next % BACKGROUND_ORDER.length] ?? "grey",
+  );
+  log(`background: ${backgroundId} (B to change)`);
+});
 
 engine.runRenderLoop(() => scene.render());
 window.addEventListener("resize", () => engine.resize());
