@@ -287,6 +287,15 @@ export interface ReconStatusMsg {
   sessionId: string;
   keyframes: number;
   lastFrameMs: number | null;
+  /** Frames the inference actually fused (vs skipped). */
+  fused?: number;
+  skipped?: number;
+  /** Total voxels in the inference's map (not just the snapshot). */
+  voxels?: number;
+  /** Human-readable scale fit, e.g. "affine a=0.537 b=0.096". */
+  scale?: string;
+  /** Why nothing is fusing (inference down, no planes, ...). Null = healthy. */
+  note?: string | null;
 }
 
 /** Server -> viewer: drop all keyframe markers for a session. */

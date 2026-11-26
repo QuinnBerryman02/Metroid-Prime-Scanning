@@ -162,9 +162,12 @@ class ReconStatusResponse(BaseModel):
 class ReconFrameResponse(BaseModel):
     ok: bool = True
     keyframes: int = 0
-    # Frames this session's map has actually fused (blur/scale failures skip).
+    # Frames this session's map has actually fused (scale failures etc. skip).
     fused: int = 0
     skipped: int = 0
     voxels: int = 0
     cloud: ReconCloud | None = None
     timing: dict[str, float] = Field(default_factory=dict)
+    # Why this frame was not fused, if it was not. Surfaced to the viewer so
+    # "no points" is never silent.
+    reason: str | None = None

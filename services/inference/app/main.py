@@ -258,6 +258,7 @@ def _skip(rs: dict[str, Any], entry: dict[str, Any], why: str) -> ReconFrameResp
         fused=rs["fused"],
         skipped=rs["skipped"],
         voxels=entry["voxels"].size,
+        reason=why,
     )
 
 

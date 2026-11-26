@@ -210,6 +210,10 @@ window.addEventListener("keydown", (e) => {
 const KEYFRAME_MAX = 120;
 const keyframeMarkers: TransformNode[] = [];
 let reconKeyframes = 0;
+let reconFused = 0;
+let reconSkipped = 0;
+let reconNote: string | null = null;
+let lastLoggedNote = "";
 
 /** A tiny line-list frustum, in the camera's local frame (+z forward). */
 function keyframeFrustum(fovDeg: number, aspect: number, depth = 0.22): Vector3[][] {
@@ -358,6 +362,15 @@ const gateway = new GatewayClient("viewer", sessionId, {
   onReconKeyframe: (msg) => addKeyframe(msg),
   onReconStatus: (msg) => {
     reconKeyframes = msg.keyframes;
+    reconFused = msg.fused ?? reconFused;
+    reconSkipped = msg.skipped ?? reconSkipped;
+    reconNote = msg.note ?? null;
+    // Only log when it changes - this fires on every keyframe.
+    if ((msg.note ?? "") !== lastLoggedNote) {
+      lastLoggedNote = msg.note ?? "";
+      if (msg.note) log(`recon NOT FUSING: ${msg.note}`);
+      else log("recon fusing");
+    }
   },
   onReconCloud: (msg) => renderCloud(msg),
   onReconClear: () => {
@@ -414,10 +427,11 @@ setInterval(() => {
   if (phone.isVisible) {
     const p = phone.position;
     statusEl.textContent =
-      `tracking · ${poseCount} poses\n` +
+      (reconNote ? `\u26a0 NOT FUSING: ${reconNote}\n` : "") +
+      `tracking \u00b7 ${poseCount} poses\n` +
       `pos ${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}\n` +
       `${planeMeshes.size} plane(s)${planesVisible ? "" : " (hidden, P)"}\n` +
-      `${reconKeyframes} keyframe(s)\n` +
+      `${reconKeyframes} keyframe(s) \u00b7 ${reconFused} fused \u00b7 ${reconSkipped} skipped\n` +
       `${cloudVoxels} voxels -> ${cloudPoints} pts\n` +
       `${cloudScale}\n` +
       `${anchorMeshes.size} anchor(s)`;

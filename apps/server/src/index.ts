@@ -55,6 +55,18 @@ const reconKeyframes = new Map<string, ReconKeyframeMsg[]>();
 // Latest cloud snapshot per session, so a late viewer gets the map immediately.
 const reconClouds = new Map<string, ReconCloudMsg>();
 
+interface ReconStats {
+  fused?: number;
+  skipped?: number;
+  voxels?: number;
+  scale?: string;
+  note?: string | null;
+}
+
+// Per-session fusion health, so the viewer can explain "no points" instead of
+// just showing nothing. Cleared on disconnect.
+const reconStats = new Map<string, ReconStats>();
+
 function broadcastReconStatus(sessionId: string) {
   const list = reconKeyframes.get(sessionId) ?? [];
   broadcast(
@@ -63,9 +75,15 @@ function broadcastReconStatus(sessionId: string) {
       sessionId,
       keyframes: list.length,
       lastFrameMs: list.at(-1)?.at ?? null,
+      ...(reconStats.get(sessionId) ?? {}),
     },
     "viewer",
   );
+}
+
+function setReconStats(sessionId: string, stats: ReconStats) {
+  reconStats.set(sessionId, stats);
+  broadcastReconStatus(sessionId);
 }
 
 interface InferenceCloud {
@@ -97,14 +115,31 @@ async function forwardReconFrame(msg: ReconFrameMsg) {
     });
     if (!res.ok) {
       app.log.warn({ status: res.status }, "inference /recon/frame failed");
+      setReconStats(msg.sessionId, {
+        note: `inference /recon/frame -> HTTP ${res.status}`,
+      });
       return;
     }
     const data = (await res.json()) as {
       cloud?: InferenceCloud | null;
       voxels?: number;
       fused?: number;
+      skipped?: number;
+      reason?: string | null;
       timing?: Record<string, number>;
     };
+
+    const scale = data.cloud
+      ? `${data.cloud.scaleMethod} a=${data.cloud.scaleA.toFixed(3)} b=${data.cloud.scaleB.toFixed(3)}`
+      : undefined;
+    setReconStats(msg.sessionId, {
+      fused: data.fused,
+      skipped: data.skipped,
+      voxels: data.voxels,
+      scale,
+      note: data.reason ?? null,
+    });
+
     if (!data.cloud) return;
     const cloud: ReconCloudMsg = {
       type: "recon_cloud",
@@ -121,6 +156,9 @@ async function forwardReconFrame(msg: ReconFrameMsg) {
     broadcast(cloud, "viewer");
   } catch (e) {
     app.log.warn({ err: e }, "inference /recon/frame unreachable");
+    setReconStats(msg.sessionId, {
+      note: `inference unreachable: ${e instanceof Error ? e.message : String(e)}`,
+    });
   }
 }
 
@@ -335,6 +373,7 @@ app.register(async (f) => {
       if (state?.role === "device") {
         latestPose.delete(state.sessionId);
         reconClouds.delete(state.sessionId);
+        reconStats.delete(state.sessionId);
         if (reconKeyframes.delete(state.sessionId)) {
           broadcast(
             { type: "recon_clear", sessionId: state.sessionId } satisfies ReconClearMsg,
