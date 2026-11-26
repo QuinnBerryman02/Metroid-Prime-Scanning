@@ -99,6 +99,10 @@ let hitTest: WebXRHitTest | null = null;
 let anchorSystem: WebXRAnchorSystem | null = null;
 let currentHit: { position: Vector3; quaternion: Quaternion } | null = null;
 let lastHitCount = -1;
+// Independent hit-test probe so the report can tell us whether Babylon's
+// feature is broken or the room simply has no trackable surface.
+let rawHitSource: XRHitTestSource | null = null;
+let rawHitCount = 0;
 let frameCount = 0;
 let lastPoseSend = 0;
 let anchorCount = 0;
@@ -171,14 +175,27 @@ function captureNow(): CaptureFrame | null {
   try {
     // `getCameraImage` is the camera-access spec; not in this @types/webxr yet.
     const binding = new XRWebGLBinding(sm.session, gl) as unknown as {
-      getCameraImage?: (view: XRView) => WebGLTexture | null;
+      getCameraImage?: (arg: unknown) => WebGLTexture | null;
     };
     diag.info("capture.getCameraImageType", typeof binding.getCameraImage);
     if (typeof binding.getCameraImage !== "function") {
       diag.error("capture", new TypeError("getCameraImage is not a function"));
       return null;
     }
-    texture = binding.getCameraImage(view);
+    // Chrome validates parameter 1 as an XRCamera (the spec text says XRView),
+    // so try `view.camera` first, then the view itself.
+    const cameraArg = (view as unknown as { camera?: unknown }).camera;
+    const args: unknown[] = cameraArg ? [cameraArg, view] : [view];
+    let lastErr: unknown = null;
+    for (const arg of args) {
+      try {
+        texture = binding.getCameraImage(arg);
+        if (texture) break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (!texture && lastErr) throw lastErr;
   } catch (e) {
     diag.error("getCameraImage", e);
     return null;
@@ -309,6 +326,16 @@ async function enterAr() {
     hud.style.display = "block";
     const session = xr.baseExperience.sessionManager.session;
     scanBtn.disabled = false; // scanning works without a hit (default depth)
+    try {
+      const viewerSpace = await session.requestReferenceSpace("viewer");
+      const request = session.requestHitTestSource?.bind(session);
+      rawHitSource = request ? ((await request({ space: viewerSpace })) ?? null) : null;
+      diag.info("rawHitSource", rawHitSource ? "created" : "null");
+      log(`raw hit-test source: ${rawHitSource ? "created" : "null"}`);
+    } catch (e) {
+      diag.error("requestHitTestSource", e);
+      log(`raw hit-test source failed: ${String(e)}`);
+    }
     const enabled =
       (session as unknown as { enabledFeatures?: string[] }).enabledFeatures ?? [];
     diag.info("session.enabledFeatures", enabled);
@@ -547,14 +574,26 @@ async function streamPose() {
     "tracked",
   );
   frameCount++;
+  if (rawHitSource) {
+    const frame = xr?.baseExperience?.sessionManager.currentFrame;
+    if (frame) {
+      try {
+        rawHitCount = frame.getHitTestResults?.(rawHitSource)?.length ?? 0;
+      } catch {
+        /* ignore */
+      }
+    }
+  }
   if (frameCount % 120 === 0) {
     const ht = hitTest as unknown as {
       _xrHitTestSource?: unknown;
       _transientXrHitTestSource?: unknown;
     } | null;
+    diag.info("rawHitCount", rawHitCount);
     log(
       `hb f=${frameCount} perm=${ht?._xrHitTestSource ? "y" : "n"} ` +
-        `trans=${ht?._transientXrHitTestSource ? "y" : "n"} hits=${lastHitCount}`,
+        `trans=${ht?._transientXrHitTestSource ? "y" : "n"} ` +
+        `babylonHits=${lastHitCount} rawHits=${rawHitCount}`,
     );
   }
   if (frameCount % 30 === 0 && placedNodes.length === 0) {
