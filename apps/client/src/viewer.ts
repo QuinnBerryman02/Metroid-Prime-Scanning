@@ -204,6 +204,36 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
+// Navigation: the mouse wheel already zooms, but be explicit about keys too.
+window.addEventListener("keydown", (e) => {
+  const step = 1.25;
+  switch (e.key) {
+    case "+":
+    case "=":
+      camera.radius = Math.max(0.15, camera.radius / step);
+      break;
+    case "-":
+    case "_":
+      camera.radius = Math.min(500, camera.radius * step);
+      break;
+    case "ArrowLeft":
+      camera.alpha -= 0.12;
+      break;
+    case "ArrowRight":
+      camera.alpha += 0.12;
+      break;
+    case "ArrowUp":
+      camera.beta = Math.max(0.02, camera.beta - 0.08);
+      break;
+    case "ArrowDown":
+      camera.beta = Math.min(Math.PI - 0.02, camera.beta + 0.08);
+      break;
+    default:
+      return;
+  }
+  e.preventDefault();
+});
+
 // --- recon keyframes (MS3.0) ------------------------------------------------
 // One small wireframe frustum per streamed keyframe: a breadcrumb trail of
 // where the phone has been, so reconstruction coverage is visible at a glance.
@@ -213,6 +243,7 @@ let reconKeyframes = 0;
 let reconFused = 0;
 let reconSkipped = 0;
 let reconNote: string | null = null;
+let reconTiming: Record<string, number> | null = null;
 let lastLoggedNote = "";
 
 /** A tiny line-list frustum, in the camera's local frame (+z forward). */
@@ -365,6 +396,7 @@ const gateway = new GatewayClient("viewer", sessionId, {
     reconFused = msg.fused ?? reconFused;
     reconSkipped = msg.skipped ?? reconSkipped;
     reconNote = msg.note ?? null;
+    reconTiming = msg.timing ?? null;
     // Only log when it changes - this fires on every keyframe.
     if ((msg.note ?? "") !== lastLoggedNote) {
       lastLoggedNote = msg.note ?? "";
@@ -434,7 +466,11 @@ setInterval(() => {
       `${reconKeyframes} keyframe(s) \u00b7 ${reconFused} fused \u00b7 ${reconSkipped} skipped\n` +
       `${cloudVoxels} voxels -> ${cloudPoints} pts\n` +
       `${cloudScale}\n` +
-      `${anchorMeshes.size} anchor(s)`;
+      (reconTiming
+        ? `depth ${(reconTiming.depth ?? 0).toFixed(0)}ms \u00b7 scale ${(reconTiming.scale ?? 0).toFixed(0)}ms \u00b7 fuse ${(reconTiming.fuse ?? 0).toFixed(0)}ms \u00b7 total ${(reconTiming.total ?? 0).toFixed(0)}ms\n`
+        : "") +
+      `${anchorMeshes.size} anchor(s)\n` +
+      `wheel / +/- zoom \u00b7 arrows orbit \u00b7 P planes`;
   }
 }, 250);
 

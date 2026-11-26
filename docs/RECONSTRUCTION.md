@@ -126,8 +126,23 @@ Fallbacks, best first:
    reuse the last good `(a,b)` if the user hasn't moved far.
 4. keep the phone's existing 1.5 m default as a last resort.
 
-Store `(a,b)` per keyframe; if the fit residual (median |error|) is bad, drop the
-keyframe.
+**Identifiability matters more than the fit.** A least-squares line through
+samples that barely vary in depth returns a *technically positive* `(a, b)` pair
+with a tiny `a` and a huge `b`. That passes any `a > 0` sanity check, and then
+warps every frame fused with it. Measured on-device: `a=0.081 b=1.543` - the
+whole room collapsed to ~1.6 m and the map smeared out to ~1 M voxels. So:
+
+- `b` is only fitted when the visible plane samples span **>= 1 m** of depth;
+  otherwise assume `b = 0`. That is not a loss of information: a single
+  fronto-parallel wall still pins `a = Z / rel` exactly.
+- an affine fit whose `b` swamps `a` is refused and replaced by the `b = 0` one.
+- accepted fits go into a short history and the scale used for fusion is the
+  running **median** (`ScaleTracker`). This is the important one: even with good
+  per-frame fits, fusing with a scale that *jumps frame to frame* smears every
+  surface into the space around it. Stability beats per-frame optimality.
+
+A frame with no usable planes keeps the tracked scale rather than failing - but
+the viewer is told, so "no planes yet" never looks like a bug.
 
 > Future upgrade: a **metric** depth model (e.g. Depth Anything V2 Metric /
 > Metric3D) conditioned on the known focal length would remove this step

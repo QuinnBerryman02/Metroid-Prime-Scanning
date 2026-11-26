@@ -20,6 +20,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
+# The offset `b` is only identifiable if the visible plane samples span some
+# real depth. Below this, a least-squares line through a nearly-flat cloud of
+# samples produces a junk pair (tiny `a`, huge `b`) that is *technically* a
+# positive scale - so we assume b=0 instead. The scale `a` itself is fine with
+# a single depth level (a fronto-parallel wall pins Z/rel directly).
+AFFINE_MIN_SPREAD = 1.0
+
 # ---------------------------------------------------------------------------
 # Pose helpers
 # ---------------------------------------------------------------------------
@@ -69,11 +76,20 @@ def _plane_samples(polygon: np.ndarray, n: int = 24) -> np.ndarray:
     return np.vstack(parts)
 
 
+def _scale_only(d: np.ndarray, z: np.ndarray) -> ScaleFit | None:
+    """Assume the model has no offset: Z = a*rel."""
+    a = float(np.median(z / d))
+    if not np.isfinite(a) or a <= 0:
+        return None
+    return ScaleFit(a, 0.0, int(d.size), float(np.std(z - a * d)), "scale")
+
+
 def fit_metric_scale(
     planes: list[dict],
     world_from_cam: np.ndarray,
     intr: tuple[float, float, float, float],
     rel_depth: np.ndarray,
+    diag: dict | None = None,
 ) -> ScaleFit | None:
     """Fit the relative depth to ARCore's metric planes.
 
@@ -81,10 +97,16 @@ def fit_metric_scale(
     camera-space z of the point) and the model's `rel_depth` at the pixel it
     projects to. Least-squares `Z = a*rel + b`, with outlier rejection.
 
-    Returns None when there is not enough (or not sane) evidence.
+    Returns None when there is not enough (or not sane) evidence. `diag`, if
+    given, is filled with plane/sample/spread numbers so the caller can explain
+    *why* it failed - that string ends up on the viewer's screen.
     """
+    if diag is not None:
+        diag.clear()
+        diag.update(planes=len(planes), samples=0, spread=0.0)
     if not planes:
         return None
+
     h, w = rel_depth.shape
     fx, fy, cx, cy = intr
     cam_from_world = np.linalg.inv(world_from_cam)
@@ -118,15 +140,16 @@ def fit_metric_scale(
         return None
     d = np.concatenate(ds)
     z = np.concatenate(zs)
+    spread = float(np.ptp(z))
+    if diag is not None:
+        diag.update(samples=int(d.size), spread=spread)
     if d.size < 6:
         return None
-
-    if float(np.ptp(z)) < 0.4:
-        # Only one depth level in view -> the offset `b` is unobservable.
-        a = float(np.median(z / d))
-        if not np.isfinite(a) or a <= 0:
-            return None
-        return ScaleFit(a, 0.0, int(d.size), float(np.std(z - a * d)), "scale")
+    if float(np.ptp(d)) < 1e-3:
+        return None  # rel_depth is flat: nothing to fit against
+    if spread < AFFINE_MIN_SPREAD:
+        # b is unidentifiable from this view; assume no offset.
+        return _scale_only(d, z)
 
     a, b = (float(x) for x in np.polyfit(d, z, 1))
     for _ in range(3):  # robust refit: drop > 3*MAD residuals
@@ -138,8 +161,43 @@ def fit_metric_scale(
         a, b = (float(x) for x in np.polyfit(d[keep], z[keep], 1))
     if not np.isfinite(a) or a <= 0:
         return None
+    if abs(b) > 0.6 * float(np.median(z)):
+        # The offset swamps the scale term: a degenerate fit despite the spread
+        # test. Refuse it and fall back to b=0.
+        return _scale_only(d, z)
     resid = z - (a * d + b)
     return ScaleFit(a, b, int(d.size), float(np.sqrt(np.mean(resid**2))), "affine")
+
+
+class ScaleTracker:
+    """Session-level metric scale, kept stable across frames.
+
+    Per-frame fits alone are too jumpy: one degenerate fit (all the visible
+    planes at the same depth) gets used for that frame, and every surface fused
+    with it lands somewhere different from the frames around it - which shows up
+    as points smeared outside the room and a ballooning voxel count. So we keep
+    a short history of accepted fits and fuse with the running **median**.
+    """
+
+    def __init__(self, history: int = 20) -> None:
+        self.history = history
+        self.a: list[float] = []
+        self.b: list[float] = []
+
+    def update(self, fit: ScaleFit | None) -> ScaleFit | None:
+        """Fold in a fresh fit (if any) and return the scale to fuse with."""
+        if fit is not None:
+            self.a.append(fit.a)
+            self.b.append(fit.b)
+            del self.a[: -self.history]
+            del self.b[: -self.history]
+        if not self.a:
+            return None
+        a = float(np.median(self.a))
+        b = float(np.median(self.b))
+        if fit is not None:
+            return ScaleFit(a, b, fit.samples, fit.rms, fit.method)
+        return ScaleFit(a, b, 0, 0.0, "tracked")
 
 
 # ---------------------------------------------------------------------------

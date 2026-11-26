@@ -13,6 +13,8 @@ import numpy as np
 sys.path.insert(0, ".")
 
 from app.fusion import (  # noqa: E402
+    ScaleFit,
+    ScaleTracker,
     VoxelMap,
     encode_points,
     fit_metric_scale,
@@ -77,17 +79,56 @@ print(f"merged snapshot: {near:,} near pts, {far:,} far pts")
 assert near > 0 and far > 0
 
 # --- scale fallback: one plane only -> b is unobservable --------------------
+# One fronto-parallel plane at a single depth: b is unidentifiable, but the
+# scale `a` is still pinned (Z/rel). Real depth maps always vary a little, so
+# give the fixture a small gradient rather than a perfectly constant map.
+rel1 = (2.0 + 0.02 * np.tile(np.linspace(-1, 1, W), (H, 1))) / A_TRUE
 single = fit_metric_scale(
     [{"polygon": quad_at(2.0, 0.3 * W, 0.7 * W, 0.2 * H, 0.8 * H)}],
     I4,
     INTR,
-    np.full((H, W), 2.0 / A_TRUE),
+    rel1,
 )
 print(f"single-plane fit: {single}")
 assert single is not None and single.method == "scale" and abs(single.b) < 1e-9
 
-# --- no planes -> None (caller keeps the cached fit) ------------------------
+# --- two planes close in depth -> b unidentifiable, so b must stay 0 --------
+Zc = np.full((H, W), 1.5)
+Zc[:, : W // 2] = 1.8
+close = fit_metric_scale(
+    [
+        {"polygon": quad_at(1.5, 0.55 * W, 0.95 * W, 0.15 * H, 0.85 * H)},
+        {"polygon": quad_at(1.8, 0.05 * W, 0.45 * W, 0.15 * H, 0.85 * H)},
+    ],
+    I4,
+    INTR,
+    Zc / A_TRUE,
+)
+print(f"close-depth fit: {close}")
+assert close is not None, "should still yield a scale"
+assert close.method == "scale" and abs(close.b) < 1e-9, close
+assert abs(close.a - A_TRUE) < 1e-6
+
+# --- diagnostics reach the caller (this string lands on the viewer) ---------
+diag = {}
+full = fit_metric_scale(planes, I4, INTR, rel, diag)
+print(f"diag: {diag}")
+assert diag["planes"] == 2 and diag["samples"] > 0 and diag["spread"] > 1.0
+assert full is not None and full.method == "affine"
+
+# --- no planes -> None (caller keeps the last tracked scale) ----------------
 print("no-plane fit:", fit_metric_scale([], I4, INTR, rel))
 assert fit_metric_scale([], I4, INTR, rel) is None
+
+# --- ScaleTracker: median across frames, survives frames with no fit --------
+tr = ScaleTracker()
+tr.update(ScaleFit(0.40, 0.02, 64, 0.01, "affine"))
+tr.update(ScaleFit(0.44, 0.00, 64, 0.01, "affine"))
+s = tr.update(None)  # a frame with no usable planes
+print(f"tracked scale: {s}")
+assert s is not None and s.method == "tracked"
+assert abs(s.a - 0.42) < 1e-9 and abs(s.b - 0.01) < 1e-9, s
+# an empty tracker returns None rather than inventing a scale
+assert ScaleTracker().update(None) is None
 
 print("\nALL OK")

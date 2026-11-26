@@ -126,6 +126,14 @@ Fused reconstruction (the new work):
       a decimated snapshot streamed to the viewer, which renders it as points.
       Verified end-to-end on the sample image; no GPU needed (see `docs/FUSION.md`).
 - [ ] **MS3.3** structure: ARCore + RANSAC planes, excluded from the object pool.
+
+> **Design note - Metroid Prime fidelity (affects MS3.4/MS3.6 ordering).** In the
+> game the visor *reveals* what is scannable: a thing lights up with its scan
+> outline and only then can it be scanned. So the order is
+> **fused map -> object candidates -> reveal each candidate as scannable
+> (outline + label) -> the user scans it for detail**. It is *not* "user aims at
+> a point and we check whether it happens to be an object". The reveal is
+> therefore part of MS3.4's output, not a later polish step.
 - [ ] **MS3.4** DBSCAN clustering + scoring + tracking -> candidate objects with IDs.
 - [ ] **MS3.5** multi-view render -> CLIP labelling.
 - [ ] **MS3.6** anchor promotion on the phone (fused objects -> scanable HUD targets).

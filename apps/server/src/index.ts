@@ -60,6 +60,7 @@ interface ReconStats {
   skipped?: number;
   voxels?: number;
   scale?: string;
+  timing?: Record<string, number> | null;
   note?: string | null;
 }
 
@@ -137,6 +138,7 @@ async function forwardReconFrame(msg: ReconFrameMsg) {
       skipped: data.skipped,
       voxels: data.voxels,
       scale,
+      timing: data.timing ?? null,
       note: data.reason ?? null,
     });
 

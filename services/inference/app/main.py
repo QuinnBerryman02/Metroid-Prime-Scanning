@@ -26,7 +26,6 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import replace
 from typing import Any
 
 import cv2
@@ -46,6 +45,8 @@ from .lifting import (
 )
 from .methods import METHODS, METHOD_SPECS, Segmenter, describe, device_for
 from .fusion import (
+    AFFINE_MIN_SPREAD,
+    ScaleTracker,
     VoxelMap,
     encode_points,
     fit_metric_scale,
@@ -228,14 +229,11 @@ _recon_lock = threading.Lock()
 
 
 def _recon_state() -> dict[str, Any]:
-    return state.setdefault(
-        "recon",
-        {"keyframes": 0, "fused": 0, "skipped": 0, "sessions": {}, "maps": {}},
-    )
+    return state.setdefault("recon", {"keyframes": 0, "sessions": {}, "maps": {}})
 
 
 def _recon_entry(rs: dict[str, Any], session_id: str) -> dict[str, Any]:
-    """Per-session voxel map + cached scale. Small LRU across sessions."""
+    """Per-session voxel map + scale tracker. Small LRU across sessions."""
     maps: dict[str, Any] = rs["maps"]
     entry = maps.get(session_id)
     if entry is None:
@@ -243,20 +241,21 @@ def _recon_entry(rs: dict[str, Any], session_id: str) -> dict[str, Any]:
             maps.pop(next(iter(maps)))
         entry = {
             "voxels": VoxelMap(config.RECON_VOXEL, config.RECON_CAPACITY),
-            "scale": None,
-            "frames": 0,
+            "tracker": ScaleTracker(),
+            "fused": 0,
+            "skipped": 0,
         }
         maps[session_id] = entry
     return entry
 
 
 def _skip(rs: dict[str, Any], entry: dict[str, Any], why: str) -> ReconFrameResponse:
-    rs["skipped"] += 1
+    entry["skipped"] += 1
     log.info("recon skipped (%s)", why)
     return ReconFrameResponse(
         keyframes=rs["keyframes"],
-        fused=rs["fused"],
-        skipped=rs["skipped"],
+        fused=entry["fused"],
+        skipped=entry["skipped"],
         voxels=entry["voxels"].size,
         reason=why,
     )
@@ -302,16 +301,24 @@ def _fuse_keyframe(
     world_from_cam = pose_to_matrix(req.pose)
     intr = intrinsics_from_fov(width, height, req.fovDeg or config.FOV_DEG)
 
-    # 2. MS3.1 - metric scale, from ARCore's planes (fall back to the last good)
+    # 2. MS3.1 - metric scale, from ARCore's planes. The tracker smooths the
+    # per-frame estimate: fusing with a scale that jumps frame to frame smears
+    # every surface into the surrounding space.
     t = time.perf_counter()
-    fit = fit_metric_scale(req.planes, world_from_cam, intr, rel)
-    if fit is not None:
-        entry["scale"] = fit
-    elif entry["scale"] is not None:
-        fit = replace(entry["scale"], method="cached")
+    diag: dict[str, Any] = {}
+    fresh = fit_metric_scale(req.planes, world_from_cam, intr, rel, diag)
+    fit = entry["tracker"].update(fresh)
     timing["scale"] = round((time.perf_counter() - t) * 1000, 2)
     if fit is None:
-        return _skip(rs, entry, "no metric scale (no usable planes yet)")
+        if not req.planes:
+            why = "no ARCore planes yet - look at the floor and walls"
+        else:
+            why = (
+                f"planes found but unusable: {diag.get('samples', 0)} samples "
+                f"over {diag.get('spread', 0.0):.2f} m of depth "
+                f"(affine fit wants {AFFINE_MIN_SPREAD} m, else b=0)"
+            )
+        return _skip(rs, entry, why)
 
     # 3. MS3.2 - unproject and fuse into the world voxel map
     t = time.perf_counter()
@@ -329,12 +336,11 @@ def _fuse_keyframe(
     timing["fuse"] = round((time.perf_counter() - t) * 1000, 2)
     timing["total"] = round((time.perf_counter() - t0) * 1000, 2)
 
-    rs["fused"] += 1
-    entry["frames"] += 1
+    entry["fused"] += 1
     voxels: VoxelMap = entry["voxels"]
     log.info(
         "recon %s fused %d pts -> %d voxels | scale %s a=%.3f b=%.3f rms=%.3f "
-        "(%d planes) %.0f ms",
+        "(%d planes, %d tracked) %.0f ms",
         req.frameId,
         points.shape[0],
         voxels.size,
@@ -343,11 +349,12 @@ def _fuse_keyframe(
         fit.b,
         fit.rms,
         len(req.planes),
+        len(entry["tracker"].a),
         timing["total"],
     )
 
     cloud = None
-    if entry["frames"] % config.RECON_CLOUD_EVERY == 0 or entry["frames"] == 1:
+    if entry["fused"] % config.RECON_CLOUD_EVERY == 0 or entry["fused"] == 1:
         pos, col, used = voxels.snapshot(config.RECON_CLOUD_VOXEL, config.RECON_CLOUD_MAX)
         p_b64, c_b64 = encode_points(pos, col)
         cloud = ReconCloud(
@@ -364,11 +371,12 @@ def _fuse_keyframe(
 
     return ReconFrameResponse(
         keyframes=rs["keyframes"],
-        fused=rs["fused"],
-        skipped=rs["skipped"],
+        fused=entry["fused"],
+        skipped=entry["skipped"],
         voxels=voxels.size,
         cloud=cloud,
         timing=timing,
+        reason=None if fresh is not None else "scale held (no usable planes in this frame)",
     )
 
 
@@ -394,11 +402,12 @@ def recon_status() -> ReconStatusResponse:
     rs = _recon_state()
     last = rs.get("last") or {}
     entry = rs["maps"].get(last.get("sessionId")) if last else None
-    fit = entry.get("scale") if entry else None
+    tracker: ScaleTracker | None = entry.get("tracker") if entry else None
+    fit = tracker.update(None) if tracker else None
     return ReconStatusResponse(
         keyframes=rs["keyframes"],
-        fused=rs["fused"],
-        skipped=rs["skipped"],
+        fused=sum(e["fused"] for e in rs["maps"].values()),
+        skipped=sum(e["skipped"] for e in rs["maps"].values()),
         sessions=rs["sessions"],
         lastFrameId=last.get("frameId"),
         lastJpegBytes=last.get("jpegBytes", 0),

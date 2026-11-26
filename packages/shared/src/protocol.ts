@@ -294,6 +294,8 @@ export interface ReconStatusMsg {
   voxels?: number;
   /** Human-readable scale fit, e.g. "affine a=0.537 b=0.096". */
   scale?: string;
+  /** Per-stage ms from the last frame (depth / scale / fuse / total). */
+  timing?: Record<string, number> | null;
   /** Why nothing is fusing (inference down, no planes, ...). Null = healthy. */
   note?: string | null;
 }
