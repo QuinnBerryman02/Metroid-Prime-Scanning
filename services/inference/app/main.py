@@ -279,30 +279,46 @@ def _record_keyframe(req: ReconFrameRequest, raw: bytes) -> None:
 
 
 def _recon_entry(
-    rs: dict[str, Any], session_id: str, method_id: str = "voxel"
+    rs: dict[str, Any],
+    session_id: str,
+    method_id: str = "voxel",
+    params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Per-session reconstruction method + scale tracker. Small LRU.
 
-    The map belongs to the session, and so does the scale tracker; switching
-    method rebuilds the map, because half a voxel map fused with one method and
-    half with another is not a reconstruction of anything.
+    Rebuilds on *any* parameter change, not just a method change. Two reasons,
+    and both of them were silent bugs:
+
+    * Methods read their params in `__init__` (voxel size, truncation, eps), so
+      assigning `method.p` afterwards changed nothing that was already stored.
+    * Nearly every param moves points: the scale decides where they land, the
+      voxel size decides how they merge, the stride which of them exist. Reusing
+      the map after a change fuses two different geometries together, which is
+      what "fixed gives useless values" actually was - the fixed-scale frames
+      were landing in a map built on the hit-test scale.
     """
+    params = params or recon.default_params(method_id)
+    key = json.dumps(params, sort_keys=True)
     maps: dict[str, Any] = rs["maps"]
     entry = maps.get(session_id)
+
+    why: str | None = None
     if entry is not None and entry["method_id"] != method_id:
-        log.info(
-            "recon %s switching method %s -> %s (map reset)",
-            session_id,
-            entry["method_id"],
-            method_id,
-        )
+        why = f"method {entry['method_id']} -> {method_id}"
+    elif entry is not None and entry["params_key"] != key:
+        why = "parameters changed"
+    if why is not None:
+        log.info("recon %s map reset (%s)", session_id, why)
         entry = None
+
     if entry is None:
         while len(maps) >= 4:
             maps.pop(next(iter(maps)))
         entry = {
             "method_id": method_id,
-            "method": recon.build(method_id, recon.default_params(method_id)),
+            "params_key": key,
+            "params": params,
+            "method": recon.build(method_id, params),
             "tracker": ScaleTracker(),
             "fused": 0,
             "skipped": 0,
@@ -345,11 +361,11 @@ def _fuse_keyframe(
     if not req.image or len(req.pose) != 16:
         return _skip(rs, entry, "missing image/pose")
 
-    # One params dict drives the shared stages; clamp it - these values size
-    # allocations, so an out-of-range stride or voxel is a DoS, not a typo.
-    params = recon.coerce_params(entry["method_id"], req.params)
+    # Resolved (and clamped) once per session in _recon_entry, because these
+    # values both drive the shared stages and decide whether the existing map
+    # is still valid for them.
+    params: dict[str, Any] = entry["params"]
     method: recon.BaseRecon = entry["method"]
-    method.p = params
 
     t0 = time.perf_counter()
     try:
@@ -448,7 +464,10 @@ def _fuse_keyframe(
     if scale_mode == "hit":
         if hit_scale is None:
             return _skip(rs, entry, f"scaleMode=hit, no hit-test ({why})", hit_scale)
-        fresh = ScaleFit(hit_scale, 0.0, 0, 0.0, "hit")
+        # scaleB applies here too. It used to be hardcoded to 0, which removed
+        # the only lever for correcting a scale that is right about the near
+        # surface and wrong further out - the exact thing `hit` gets wrong.
+        fresh = ScaleFit(hit_scale, params["scaleB"], 0, 0.0, "hit")
         source = "hit-test"
     elif scale_mode == "fixed":
         fresh = ScaleFit(params["scaleA"], params["scaleB"], 0, 0.0, "fixed")
@@ -550,7 +569,10 @@ def recon_frame(req: ReconFrameRequest) -> ReconFrameResponse:
     rs["keyframes"] += 1
     sessions: dict[str, int] = rs["sessions"]
     sessions[req.sessionId] = sessions.get(req.sessionId, 0) + 1
-    entry = _recon_entry(rs, req.sessionId, recon.resolve(req.method))
+    method_id = recon.resolve(req.method)
+    entry = _recon_entry(
+        rs, req.sessionId, method_id, recon.coerce_params(method_id, req.params)
+    )
 
     if not _recon_lock.acquire(blocking=False):
         return _skip(rs, entry, "busy (previous frame still fusing)")

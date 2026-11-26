@@ -9,6 +9,7 @@ network, no camera: this is about the accumulators being correct.
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from pathlib import Path
@@ -17,7 +18,12 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.recon_methods import build, coerce_params, list_methods  # noqa: E402
+from app.recon_methods import (  # noqa: E402
+    build,
+    coerce_params,
+    default_params,
+    list_methods,
+)
 
 OK = "\033[32mPASS\033[0m"
 BAD = "\033[31mFAIL\033[0m"
@@ -77,9 +83,22 @@ for m in methods:
     check(f"{m['id']} has params", len(m["params"]) >= 5)
 check("coerce clamps", coerce_params("voxel", {"voxel": 99.0})["voxel"] == 0.25)
 check("coerce falls back", coerce_params("voxel", {"voxel": "junk"})["voxel"] == 0.05)
+# Compare against the declared default rather than a literal: the default has
+# changed once already (auto -> fixed) and this should not break when it does.
 check(
     "coerce rejects bad enum",
-    coerce_params("voxel", {"scaleMode": "nope"})["scaleMode"] == "auto",
+    coerce_params("voxel", {"scaleMode": "nope"})["scaleMode"]
+    == default_params("voxel")["scaleMode"],
+)
+check(
+    "coerce keeps a valid enum",
+    coerce_params("voxel", {"scaleMode": "hit"})["scaleMode"] == "hit",
+)
+check(
+    "params are json-stable",
+    json.dumps(coerce_params("voxel", {}), sort_keys=True)
+    == json.dumps(default_params("voxel"), sort_keys=True),
+    "the map-rebuild key depends on this",
 )
 
 clean = scene(False)
