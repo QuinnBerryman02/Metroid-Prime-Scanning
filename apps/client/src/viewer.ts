@@ -725,6 +725,27 @@ function replayClear() {
   disposeCloud();
 }
 
+/**
+ * A fetch rejection is always network-level - "Failed to fetch" never comes with
+ * a status code - so it means the browser could not reach the dev server's
+ * proxy at all. Probe the gateway on its own so the message says *which* piece
+ * is down instead of leaving a bare TypeError on screen.
+ */
+async function explainFetchFailure(e: unknown): Promise<string> {
+  const reason = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+  try {
+    const r = await fetch("/api/recon/logs");
+    return r.ok
+      ? `replay failed (${reason}) - gateway is up, so it rejected the request`
+      : `replay failed (${reason}) - gateway answered ${r.status}`;
+  } catch {
+    return (
+      `replay failed (${reason}) - gateway unreachable on :3000. ` +
+      "Is `npm run dev` still running? See docs/RUNNING.md."
+    );
+  }
+}
+
 replayBtn.addEventListener("click", () => {
   const session = logSelect.value;
   if (!session) return;
@@ -742,12 +763,12 @@ replayBtn.addEventListener("click", () => {
         ? log(`replaying ${session} with ${method} ${JSON.stringify(params)}`)
         : log(`replay failed ${r.status}`),
     )
-    .catch((e) => log(`replay failed: ${String(e)}`));
+    .catch((e) => void explainFetchFailure(e).then(log));
 });
 stopBtn.addEventListener("click", () => {
-  void fetch("/api/recon/replay/stop", { method: "POST" }).then(() =>
-    log("replay stopped"),
-  );
+  void fetch("/api/recon/replay/stop", { method: "POST" })
+    .then(() => log("replay stopped"))
+    .catch((e) => void explainFetchFailure(e).then(log));
 });
 void loadLogs();
 void loadMethods();
