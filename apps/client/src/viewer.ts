@@ -459,7 +459,7 @@ setInterval(() => {
   if (phone.isVisible) {
     const p = phone.position;
     statusEl.textContent =
-      (reconNote ? `\u26a0 NOT FUSING: ${reconNote}\n` : "") +
+      (reconNote ? `\u26a0 ${reconNote}\n` : "") +
       `tracking \u00b7 ${poseCount} poses\n` +
       `pos ${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}\n` +
       `${planeMeshes.size} plane(s)${planesVisible ? "" : " (hidden, P)"}\n` +

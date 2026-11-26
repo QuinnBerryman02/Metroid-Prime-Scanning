@@ -238,7 +238,7 @@ export interface ReconFrameMsg {
   /** base64 JPEG (no data-URI prefix). */
   image: string;
   /** Why this frame qualified (debug). */
-  reason: "first" | "move" | "rotate" | "both";
+  reason: "first" | "move" | "rotate" | "both" | "manual";
   /** Laplacian variance of the greyscale frame (higher = sharper). */
   sharpness: number;
 }

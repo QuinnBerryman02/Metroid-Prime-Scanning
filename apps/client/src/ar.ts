@@ -56,6 +56,7 @@ const canvas = document.getElementById("app") as HTMLCanvasElement;
 const startOverlay = document.getElementById("start")!;
 const startBtn = document.getElementById("startBtn") as HTMLButtonElement;
 const hud = document.getElementById("hud")!;
+const keyBtn = document.getElementById("keyBtn") as HTMLButtonElement;
 const scanBtn = document.getElementById("scanBtn") as HTMLButtonElement;
 const clearBtn = document.getElementById("clearBtn") as HTMLButtonElement;
 const reportBtn = document.getElementById("reportBtn") as HTMLButtonElement;
@@ -383,6 +384,10 @@ function captureNow(): CaptureFrame | null {
 // A keyframe is a frame worth *fusing* later: new enough, moved enough, sharp
 // enough, and not a duplicate. Captures are expensive (readPixels + JPEG + a
 // blur score), so gate them hard - ~2-3 Hz is plenty for reconstruction.
+// Auto-streaming is off while we debug the fusion: keyframes go out only when
+// the Key button is tapped, so we can inspect the geometry from 1-2 frames
+// without a session's worth of data smearing over it.
+const AUTO_KEYFRAMES = false;
 const KF_MIN_INTERVAL_MS = 350;
 const KF_MIN_MOVE = 0.02; // metres
 const KF_MIN_ROT = 0.026; // radians (~1.5 deg)
@@ -431,20 +436,23 @@ function resetKeyframes() {
   kfLastMs = 0;
 }
 
-async function maybeKeyframe() {
+async function captureKeyframe(manual = false) {
   if (!inAr || kfSending) return;
+  if (!manual && !AUTO_KEYFRAMES) return;
   const cam = scene.activeCamera;
   if (!cam) return;
   const now = performance.now();
-  if (now - kfLastMs < KF_MIN_INTERVAL_MS) return;
+  if (!manual && now - kfLastMs < KF_MIN_INTERVAL_MS) return;
 
   const scale = new Vector3();
   const quat = new Quaternion();
   const pos = new Vector3();
   cam.getWorldMatrix().decompose(scale, quat, pos);
 
-  let reason: "first" | "move" | "rotate" | "both" = "first";
-  if (kfLastPos && kfLastQuat) {
+  let reason: "first" | "move" | "rotate" | "both" | "manual" = manual
+    ? "manual"
+    : "first";
+  if (!manual && kfLastPos && kfLastQuat) {
     const moved = Vector3.Distance(pos, kfLastPos) > KF_MIN_MOVE;
     const rotated = quatAngle(quat, kfLastQuat) > KF_MIN_ROT;
     if (!moved && !rotated) return;
@@ -558,6 +566,7 @@ async function enterAr() {
     inAr = true;
     resetKeyframes();
     const session = xr.baseExperience.sessionManager.session;
+    keyBtn.disabled = false;
     scanBtn.disabled = false; // scanning works without a hit (default depth)
     try {
       const viewerSpace = await session.requestReferenceSpace("viewer");
@@ -836,7 +845,7 @@ async function streamPose() {
     setStatus(
       `tracking · pos ${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}` +
         `<br>hit-test: ${lastHitCount > 0 ? "LOCK (" + lastHitCount + ")" : "searching…"}` +
-        `<br>keyframes: ${kfCount}`,
+        `<br>keyframes: ${kfCount}${AUTO_KEYFRAMES ? "" : " (Key button)"}`,
     );
   }
 }
@@ -854,10 +863,11 @@ scene.onBeforeRenderObservable.add(() => {
     resolve(frame);
   }
   void streamPose();
-  void maybeKeyframe();
+  void captureKeyframe();
 });
 
 startBtn.addEventListener("click", () => void enterAr());
+keyBtn.addEventListener("click", () => void captureKeyframe(true));
 scanBtn.addEventListener("click", () => void scanAndAnchor());
 clearBtn.addEventListener("click", () => clearAnchors());
 reportBtn.addEventListener("click", () => {

@@ -32,6 +32,7 @@
         color: #eaf6f3; }
       #controls button:disabled { opacity: .4; }
       #scanBtn { background: #0e3a2f; border-color: #1e7a5f; }
+      #keyBtn { background: #0e2a3a; border-color: #1e5a7a; }
 
       /* Pre-session overlay */
       #start { position: fixed; inset: 0; z-index: 20; display: flex;
@@ -53,6 +54,7 @@
       <pre id="debug"></pre>
       <div id="reticle"></div>
       <div id="controls">
+        <button id="keyBtn" disabled>Key</button>
         <button id="scanBtn" disabled>Scan</button>
         <button id="clearBtn">Clear</button>
         <button id="reportBtn">Report</button>

@@ -232,6 +232,26 @@ def _recon_state() -> dict[str, Any]:
     return state.setdefault("recon", {"keyframes": 0, "sessions": {}, "maps": {}})
 
 
+def _scale_why(planes: list[dict], diag: dict[str, Any]) -> str:
+    """One line explaining the scale fit, short enough to put on screen.
+
+    Reads as a funnel: how many polygons we got, how many sample points landed
+    in the image, how many of those we could pair, and how much depth they span.
+    `inFrustum=0` means the pose/plane frames disagree; `planeZ<0` means the
+    planes are behind the camera.
+    """
+    if not planes:
+        return "no ARCore planes in this frame"
+    nan = float("nan")
+    return (
+        f"{diag.get('polyCount', 0)}/{len(planes)} polys, "
+        f"{diag.get('inFrustum', 0)} pts in frame, "
+        f"{diag.get('samples', 0)} samples, spread "
+        f"{diag.get('spread', 0.0):.2f}/{AFFINE_MIN_SPREAD:.1f} m, "
+        f"planeZ {diag.get('planeZ', nan):.2f} m, rel {diag.get('relMed', nan):.2f}"
+    )
+
+
 def _recon_entry(rs: dict[str, Any], session_id: str) -> dict[str, Any]:
     """Per-session voxel map + scale tracker. Small LRU across sessions."""
     maps: dict[str, Any] = rs["maps"]
@@ -307,18 +327,14 @@ def _fuse_keyframe(
     t = time.perf_counter()
     diag: dict[str, Any] = {}
     fresh = fit_metric_scale(req.planes, world_from_cam, intr, rel, diag)
+    why = _scale_why(req.planes, diag)
     fit = entry["tracker"].update(fresh)
     timing["scale"] = round((time.perf_counter() - t) * 1000, 2)
     if fit is None:
-        if not req.planes:
-            why = "no ARCore planes yet - look at the floor and walls"
-        else:
-            why = (
-                f"planes found but unusable: {diag.get('samples', 0)} samples "
-                f"over {diag.get('spread', 0.0):.2f} m of depth "
-                f"(affine fit wants {AFFINE_MIN_SPREAD} m, else b=0)"
-            )
         return _skip(rs, entry, why)
+    # Fusing on the tracked scale is fine occasionally, but if this happens on
+    # every frame the map is being built on a scale nothing is validating.
+    scale_note = None if fresh is not None else f"scale held a={fit.a:.2f} - {why}"
 
     # 3. MS3.2 - unproject and fuse into the world voxel map
     t = time.perf_counter()
@@ -376,7 +392,7 @@ def _fuse_keyframe(
         voxels=voxels.size,
         cloud=cloud,
         timing=timing,
-        reason=None if fresh is not None else "scale held (no usable planes in this frame)",
+        reason=scale_note,
     )
 
 

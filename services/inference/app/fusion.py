@@ -103,7 +103,15 @@ def fit_metric_scale(
     """
     if diag is not None:
         diag.clear()
-        diag.update(planes=len(planes), samples=0, spread=0.0)
+        diag.update(
+            planes=len(planes),
+            polyCount=0,
+            planeZ=float("nan"),
+            inFrustum=0,
+            samples=0,
+            spread=0.0,
+            relMed=float("nan"),
+        )
     if not planes:
         return None
 
@@ -113,12 +121,17 @@ def fit_metric_scale(
 
     ds: list[np.ndarray] = []
     zs: list[np.ndarray] = []
+    all_z: list[np.ndarray] = []
+    poly_count = 0
+    in_frustum = 0
     for plane in planes:
         poly = np.asarray(plane.get("polygon") or [], dtype=np.float64)
         if poly.ndim != 2 or len(poly) < 3:
             continue
+        poly_count += 1
         cam = transform_points(cam_from_world, _plane_samples(poly))
         z = cam[:, 2]
+        all_z.append(z)
         ok = z > 0.15  # in front of the camera
         if not ok.any():
             continue
@@ -128,6 +141,7 @@ def fit_metric_scale(
         inb = (u >= 0) & (u < w - 1) & (v >= 0) & (v < h - 1)
         if not inb.any():
             continue
+        in_frustum += int(inb.sum())
         ui = u[inb].astype(np.int32)
         vi = v[inb].astype(np.int32)
         d = rel_depth[vi, ui].astype(np.float64)
@@ -136,13 +150,20 @@ def fit_metric_scale(
             ds.append(d[keep])
             zs.append(z[inb][keep])
 
+    if diag is not None:
+        diag.update(
+            polyCount=poly_count,
+            planeZ=float(np.median(np.concatenate(all_z))) if all_z else float("nan"),
+            inFrustum=in_frustum,
+        )
+
     if not ds:
         return None
     d = np.concatenate(ds)
     z = np.concatenate(zs)
     spread = float(np.ptp(z))
     if diag is not None:
-        diag.update(samples=int(d.size), spread=spread)
+        diag.update(samples=int(d.size), spread=spread, relMed=float(np.median(d)))
     if d.size < 6:
         return None
     if float(np.ptp(d)) < 1e-3:
