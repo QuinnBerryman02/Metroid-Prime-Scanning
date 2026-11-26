@@ -488,6 +488,10 @@ const methodSelect = document.getElementById("methodSelect") as HTMLSelectElemen
 const paramsBox = document.getElementById("params")!;
 const methodDesc = document.getElementById("methodDesc")!;
 const resetParams = document.getElementById("resetParams") as HTMLButtonElement;
+const algoToggle = document.getElementById("algoToggle") as HTMLButtonElement;
+const algoBox = document.getElementById("algoBox")!;
+const algoSummary = document.getElementById("algoSummary")!;
+const ALGO_KEY = "viewer.algoOpen";
 
 interface ParamSpec {
   key: string;
@@ -510,6 +514,32 @@ let methods: MethodSpec[] = [];
 
 function currentMethod(): MethodSpec | undefined {
   return methods.find((m) => m.id === methodSelect.value);
+}
+
+/**
+ * The parameter grid is tall and the scene is the point, so it starts folded
+ * away. The one-line summary still says what a Replay would actually run.
+ */
+function setAlgoOpen(open: boolean) {
+  algoBox.hidden = !open;
+  algoToggle.innerHTML = open ? "&#9662; algorithms" : "&#9656; algorithms";
+  try {
+    localStorage.setItem(ALGO_KEY, open ? "1" : "0");
+  } catch {
+    /* private mode - not worth caring about */
+  }
+}
+
+function updateAlgoSummary() {
+  const m = currentMethod();
+  if (!m) {
+    algoSummary.textContent = "";
+    return;
+  }
+  const p = collectParams();
+  const scale =
+    p.scaleMode === "fixed" ? `a=${Number(p.scaleA).toFixed(2)}` : String(p.scaleMode);
+  algoSummary.textContent = `${m.id} \u00b7 ${scale}`;
 }
 
 /**
@@ -593,6 +623,7 @@ async function loadMethods() {
     }
     methodSelect.value = data.default ?? methods[0]?.id ?? "voxel";
     renderParams();
+    updateAlgoSummary();
     log(`methods: ${methods.map((m) => m.id).join(", ")}`);
   } catch (e) {
     methodDesc.textContent = "could not load methods (inference up?)";
@@ -600,8 +631,34 @@ async function loadMethods() {
   }
 }
 
-methodSelect.addEventListener("change", renderParams);
-resetParams.addEventListener("click", renderParams);
+methodSelect.addEventListener("change", () => {
+  renderParams();
+  updateAlgoSummary();
+});
+resetParams.addEventListener("click", () => {
+  renderParams();
+  updateAlgoSummary();
+});
+paramsBox.addEventListener("input", updateAlgoSummary);
+paramsBox.addEventListener("change", updateAlgoSummary);
+
+algoToggle.addEventListener("click", () => setAlgoOpen(algoBox.hidden));
+// `A`, matching the other single-key viewer shortcuts (P toggles planes).
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "a" && e.key !== "A") return;
+  const t = e.target as HTMLElement | null;
+  // Don't steal the key while a control has focus.
+  if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
+  setAlgoOpen(algoBox.hidden);
+});
+
+let algoOpen = false;
+try {
+  algoOpen = localStorage.getItem(ALGO_KEY) === "1";
+} catch {
+  /* ignore */
+}
+setAlgoOpen(algoOpen);
 
 async function loadLogs() {
   try {
@@ -647,7 +704,7 @@ replayBtn.addEventListener("click", () => {
   replayClear();
   const method = methodSelect.value;
   const params = collectParams();
-  paramsBox.style.opacity = "0.5";
+  updateAlgoSummary();
   void fetch("/api/recon/replay", {
     method: "POST",
     headers: { "content-type": "application/json" },

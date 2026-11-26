@@ -22,6 +22,12 @@
         background: rgba(4,12,15,.86); border: 1px solid #1e3a44;
         border-radius: 10px; }
       #replay .row { display: flex; gap: 8px; align-items: center; }
+      #algoToggle { cursor: pointer; }
+      #algoSummary { color: #7cf7c4; font-size: 12px;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #algoBox { display: flex; flex-direction: column; gap: 6px; }
+      /* Beats the id rule above: [hidden] only wins at equal specificity. */
+      #algoBox[hidden] { display: none; }
       #params { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px;
         align-items: center; border-top: 1px solid #1e3a44; padding-top: 7px; }
       #params label { color: #b9cdd3; white-space: nowrap; }
@@ -49,12 +55,20 @@
         <button id="stopBtn">Stop</button>
       </div>
       <div class="row">
-        <span>method:</span>
-        <select id="methodSelect"></select>
-        <button id="resetParams">defaults</button>
+        <button id="algoToggle" title="show method and parameters (A)">
+          &#9656; algorithms
+        </button>
+        <span id="algoSummary"></span>
       </div>
-      <div id="methodDesc"></div>
-      <div id="params"></div>
+      <div id="algoBox" hidden>
+        <div class="row">
+          <span>method:</span>
+          <select id="methodSelect"></select>
+          <button id="resetParams">defaults</button>
+        </div>
+        <div id="methodDesc"></div>
+        <div id="params"></div>
+      </div>
     </div>
     <script type="module" src="/src/viewer.ts"></script>
   </body>
