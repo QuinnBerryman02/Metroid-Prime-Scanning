@@ -94,9 +94,11 @@
         border-radius: 6px; border: 1px solid var(--field-border);
         background: var(--field); color: var(--on-panel); }
       .phelp { grid-column: 2; color: var(--dim2); margin: -2px 0 4px; }
-      #replay select, #replay button { font: inherit; padding: 6px 10px;
-        border-radius: 7px; border: 1px solid var(--field-border);
+      #replay select, #replay button, #replay input[type="number"] { font: inherit;
+        padding: 6px 8px; border-radius: 7px; border: 1px solid var(--field-border);
         background: var(--field-alt); color: var(--on-panel); max-width: 42ch; }
+      #maxFrames { width: 6ch; }
+      #framesLabel { color: var(--dim); }
       #replayBtn { border-color: var(--border-strong); background: var(--accent-bg); }
       #replayHint { color: var(--dim); }
     </style>
@@ -111,6 +113,11 @@
         <select id="logSelect"></select>
         <button id="replayBtn">Replay</button>
         <button id="stopBtn">Stop</button>
+        <label id="framesLabel" for="maxFrames"
+          title="replay only the first N keyframes - 1 shows a single frame; blank plays the whole run">
+          frames
+        </label>
+        <input id="maxFrames" type="number" min="0" step="1" placeholder="all" />
       </div>
       <div class="row">
         <button id="algoToggle" title="show method and parameters (A)">

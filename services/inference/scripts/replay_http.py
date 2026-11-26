@@ -71,6 +71,9 @@ def main() -> int:
     ap.add_argument("--scale-a", type=float, default=None, help="with --scale-mode fixed")
     ap.add_argument("--fov", type=float, default=None, help="override fovDeg")
     ap.add_argument("--session-suffix", default="-replay")
+    ap.add_argument("--max", type=int, default=0,
+                    help="replay only the first N frames (0 = all); 1 is the "
+                         "quickest way to look at a single frame's geometry")
     args = ap.parse_args()
 
     d = LOG_DIR / args.session
@@ -81,6 +84,9 @@ def main() -> int:
     if not frames:
         print(f"no frames in {d}")
         return 1
+    if args.max > 0:
+        print(f"limiting to the first {args.max} of {len(frames)} frames")
+        frames = frames[: args.max]
     print(f"{len(frames)} frames from {d.name}\n")
 
     base = json.loads(frames[0].read_text(encoding="utf-8"))

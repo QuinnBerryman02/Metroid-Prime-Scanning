@@ -294,7 +294,8 @@ async function startReplay(
   intervalMs: number,
   method: string,
   params: Record<string, number | string | boolean>,
-) {
+  maxFrames: number,
+): Promise<number> {
   stopReplay?.();
   let stopped = false;
   stopReplay = () => {
@@ -302,7 +303,10 @@ async function startReplay(
   };
 
   const dir = join(RECON_LOG_DIR, session);
-  const files = (await readdir(dir)).filter((f) => f.endsWith(".json")).sort();
+  const all = (await readdir(dir)).filter((f) => f.endsWith(".json")).sort();
+  // maxFrames=1 replays only the first keyframe, which is how you look at one
+  // frame's geometry without waiting out the whole walk. 0 means all of them.
+  const files = maxFrames > 0 ? all.slice(0, maxFrames) : all;
   const replayId = `replay-${session}`;
 
   // Fresh slate, so a second replay does not stack on the first.
@@ -312,7 +316,7 @@ async function startReplay(
   planes.delete(replayId);
   broadcast({ type: "recon_clear", sessionId: replayId } satisfies ReconClearMsg, "viewer");
   app.log.info(
-    { session, frames: files.length, intervalMs, method },
+    { session, frames: files.length, of: all.length, intervalMs, method },
     "replay starting",
   );
 
@@ -369,6 +373,7 @@ async function startReplay(
     }
     app.log.info({ session, stopped }, "replay finished");
   })();
+  return files.length;
 }
 
 app.post("/recon/replay", async (req, reply) => {
@@ -378,6 +383,8 @@ app.post("/recon/replay", async (req, reply) => {
         intervalMs?: number;
         method?: string;
         params?: Record<string, number | string | boolean>;
+        /** 0 or absent = every frame. 1 = only the first. */
+        maxFrames?: number;
       }
     | undefined;
   const session = body?.session;
@@ -389,18 +396,30 @@ app.post("/recon/replay", async (req, reply) => {
     reply.code(400);
     return { error: "bad session name" };
   }
+  // Clamp: a huge value would just be the whole recording, but a negative or
+  // NaN one must not silently become "all".
+  const raw = Number(body?.maxFrames ?? 0);
+  const maxFrames = Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 0;
+
+  let played: number;
   try {
-    await startReplay(
+    played = await startReplay(
       session,
       body?.intervalMs ?? REPLAY_INTERVAL_MS,
       body?.method ?? "voxel",
       body?.params ?? {},
+      maxFrames,
     );
   } catch (e) {
     reply.code(404);
     return { error: `cannot replay ${session}: ${String(e)}` };
   }
-  return { ok: true, session, method: body?.method ?? "voxel" };
+  return {
+    ok: true,
+    session,
+    method: body?.method ?? "voxel",
+    frames: played,
+  };
 });
 
 app.post("/recon/replay/stop", async () => {

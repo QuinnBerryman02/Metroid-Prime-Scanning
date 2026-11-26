@@ -511,6 +511,7 @@ const logSelect = document.getElementById("logSelect") as HTMLSelectElement;
 const replayBtn = document.getElementById("replayBtn") as HTMLButtonElement;
 const stopBtn = document.getElementById("stopBtn") as HTMLButtonElement;
 const replayHint = document.getElementById("replayHint")!;
+const maxFramesInput = document.getElementById("maxFrames") as HTMLInputElement;
 const methodSelect = document.getElementById("methodSelect") as HTMLSelectElement;
 const paramsBox = document.getElementById("params")!;
 const methodDesc = document.getElementById("methodDesc")!;
@@ -753,15 +754,20 @@ replayBtn.addEventListener("click", () => {
   const method = methodSelect.value;
   const params = collectParams();
   updateAlgoSummary();
+  // Blank or 0 means the whole run; 1 means just the first keyframe.
+  const maxFrames = Math.max(0, Math.floor(Number(maxFramesInput.value) || 0));
   void fetch("/api/recon/replay", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ session, method, params }),
+    body: JSON.stringify({ session, method, params, maxFrames }),
   })
     .then((r) =>
       r.ok
-        ? log(`replaying ${session} with ${method} ${JSON.stringify(params)}`)
-        : log(`replay failed ${r.status}`),
+        ? log(
+            `replaying ${session}${maxFrames ? ` (first ${maxFrames})` : ""} ` +
+              `with ${method} ${JSON.stringify(params)}`,
+          )
+        : log(`replay failed ${r.status} for ${session}`),
     )
     .catch((e) => void explainFetchFailure(e).then(log));
 });
