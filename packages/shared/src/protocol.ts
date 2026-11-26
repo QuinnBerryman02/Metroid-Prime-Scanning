@@ -246,6 +246,13 @@ export interface ReconFrameMsg {
    * does not duplicate the log it is reading from.
    */
   record?: boolean;
+  /**
+   * Always return a cloud for this frame, even if it is not a snapshot frame.
+   * The final frame of a replay sets this, so a run always ends with visible
+   * geometry instead of depending on where the every-Nth counter happened to
+   * land.
+   */
+  forceSnapshot?: boolean;
   /** Which reconstruction method to fuse with (see GET /recon/methods). */
   method?: string;
   /** That method's parameters; the server clamps them to their declared range. */
@@ -276,6 +283,24 @@ export interface ReconKeyframeMsg {
 }
 
 /** Server -> viewer: a decimated point-cloud snapshot from the fusion map. */
+/**
+ * Progress of a replay, so "nothing is happening" is distinguishable from
+ * "nothing is visible". A replay is driven server-side, so without this the
+ * viewer has no way to tell a run that is working from one that died.
+ */
+export interface ReconReplayMsg {
+  type: "recon_replay";
+  /** The replay's own session. One per run - never reused, see the gateway. */
+  sessionId: string;
+  /** The recording being replayed. */
+  source: string;
+  /** Frames sent so far (0 at the start). */
+  index: number;
+  /** Frames this run will send in total. */
+  total: number;
+  state: "running" | "done" | "stopped";
+}
+
 export interface ReconCloudMsg {
   type: "recon_cloud";
   sessionId: string;
@@ -399,6 +424,7 @@ export type ServerToClient =
   | ReconStatusMsg
   | ReconClearMsg
   | ReconCloudMsg
+  | ReconReplayMsg
   | SessionEventMsg
   | ErrorMsg;
 

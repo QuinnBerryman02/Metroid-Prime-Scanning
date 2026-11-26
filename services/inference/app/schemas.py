@@ -131,6 +131,9 @@ class ReconFrameRequest(BaseModel):
     hitDistance: float | None = None
     # False when this frame is being replayed from a recording.
     record: bool = True
+    # Force a cloud snapshot even if this is not an every-Nth frame. The last
+    # frame of a replay sets it, so the run always ends with visible geometry.
+    forceSnapshot: bool = False
     # Which reconstruction method to use and its knobs (see GET /recon/methods).
     # Switching method rebuilds this session's map, so the two never mix.
     method: str = "voxel"

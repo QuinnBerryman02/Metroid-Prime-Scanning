@@ -26,7 +26,20 @@ log("viewer.ts loaded");
 const sessionId = "viewer-" + Math.random().toString(36).slice(2, 7);
 
 const canvas = document.getElementById("app") as HTMLCanvasElement;
-const statusEl = document.getElementById("status")!;
+const statusEl = document.getElementById("status") as HTMLDetailsElement;
+const statusHead = document.getElementById("statusHead")!;
+const statusBody = document.getElementById("statusBody")!;
+
+/**
+ * The status box is a <details>: one line of the numbers you actually watch,
+ * and the full breakdown behind a click. It used to be ten lines of always-on
+ * text covering the scene.
+ */
+function setStatus(head: string, body = "") {
+  statusHead.textContent = head;
+  statusBody.textContent = body;
+  statusBody.hidden = !body;
+}
 
 const engine = new Engine(canvas, true);
 const scene = new Scene(engine);
@@ -399,9 +412,9 @@ function renderCloud(msg: ReconCloudMsg) {
 const gateway = new GatewayClient("viewer", sessionId, {
   onStatus: (s) => {
     log(`ws ${s}`);
-    if (s === "open") statusEl.textContent = "connected · waiting for device…";
+    if (s === "open") setStatus("connected · waiting for device…");
     if (s === "open") log("viewer connected");
-    if (s === "closed") statusEl.textContent = "disconnected";
+    if (s === "closed") setStatus("disconnected");
   },
   onPose: (msg) => {
     phone.isVisible = true;
@@ -433,7 +446,39 @@ const gateway = new GatewayClient("viewer", sessionId, {
       else log("recon fusing");
     }
   },
-  onReconCloud: (msg) => renderCloud(msg),
+  onReconCloud: (msg) => {
+    replayClouds += 1;
+    renderCloud(msg);
+  },
+  onReconReplay: (msg) => {
+    replayProgress.hidden = false;
+    replayBar.max = Math.max(1, msg.total);
+    replayBar.value = msg.index;
+    if (msg.state === "running") {
+      if (msg.index === 0) replayClouds = 0;
+      replayProgressText.textContent =
+        `replaying ${msg.source.slice(0, 8)}\u2026 ${msg.index}/${msg.total}`;
+      window.clearTimeout(replayHideTimer);
+      return;
+    }
+
+    // Finished. Say so out loud if no geometry came back - a replay that ran
+    // to completion and drew nothing is exactly the confusing case, and the
+    // reason is almost always in the fusion note.
+    replayProgressText.textContent =
+      `${msg.state} \u00b7 ${msg.total} frame${msg.total === 1 ? "" : "s"}` +
+      (replayClouds === 0 ? " \u00b7 no cloud returned" : ` \u00b7 ${replayClouds} cloud(s)`);
+    if (replayClouds === 0) {
+      log(
+        `replay ${msg.state} with NO cloud returned for ${msg.total} frame(s) - ` +
+          (reconNote ? `fusion says: ${reconNote}` : "check the log for NOT FUSING"),
+      );
+    }
+    window.clearTimeout(replayHideTimer);
+    replayHideTimer = window.setTimeout(() => {
+      replayProgress.hidden = true;
+    }, 6000);
+  },
   onReconClear: () => {
     clearKeyframes();
     disposeCloud();
@@ -483,23 +528,35 @@ gateway.connect();
 setInterval(() => {
   if (phone.isVisible && performance.now() - lastSeen > 1500) {
     phone.isVisible = false;
-    statusEl.textContent = "device offline";
+    setStatus("device offline", statusBody.textContent ?? "");
   }
   if (phone.isVisible) {
     const p = phone.position;
-    statusEl.textContent =
-      (reconNote ? `\u26a0 ${reconNote}\n` : "") +
-      `tracking \u00b7 ${poseCount} poses\n` +
-      `pos ${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}\n` +
-      `${planeMeshes.size} plane(s)${planesVisible ? "" : " (hidden, P)"}\n` +
-      `${reconKeyframes} keyframe(s) \u00b7 ${reconFused} fused \u00b7 ${reconSkipped} skipped\n` +
-      `${cloudVoxels} voxels -> ${cloudPoints} pts\n` +
-      `${cloudScale}\n` +
-      (reconTiming
-        ? `depth ${(reconTiming.depth ?? 0).toFixed(0)}ms \u00b7 scale ${(reconTiming.scale ?? 0).toFixed(0)}ms \u00b7 fuse ${(reconTiming.fuse ?? 0).toFixed(0)}ms \u00b7 total ${(reconTiming.total ?? 0).toFixed(0)}ms\n`
-        : "") +
-      `${anchorMeshes.size} anchor(s)\n` +
-      `wheel / +/- zoom \u00b7 arrows orbit \u00b7 P planes`;
+    setStatus(
+      // The headline is what you watch while a replay runs.
+      `${reconKeyframes} kf \u00b7 ${reconFused} fused \u00b7 ${cloudPoints} pts \u00b7 ` +
+        `${cloudScale}` +
+        (reconNote ? " \u00b7 \u26a0" : ""),
+      [
+        reconNote ? `\u26a0 ${reconNote}` : "",
+        `tracking \u00b7 ${poseCount} poses`,
+        `pos ${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}`,
+        `${planeMeshes.size} plane(s)${planesVisible ? "" : " (hidden, P)"}`,
+        `${reconKeyframes} keyframe(s) \u00b7 ${reconFused} fused \u00b7 ${reconSkipped} skipped`,
+        `${cloudVoxels} voxels -> ${cloudPoints} pts`,
+        cloudScale,
+        reconTiming
+          ? `depth ${(reconTiming.depth ?? 0).toFixed(0)}ms \u00b7 ` +
+            `scale ${(reconTiming.scale ?? 0).toFixed(0)}ms \u00b7 ` +
+            `fuse ${(reconTiming.fuse ?? 0).toFixed(0)}ms \u00b7 ` +
+            `total ${(reconTiming.total ?? 0).toFixed(0)}ms`
+          : "",
+        `${anchorMeshes.size} anchor(s)`,
+        `wheel / +/- zoom \u00b7 arrows orbit \u00b7 P planes \u00b7 B background \u00b7 A algorithms`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    );
   }
 }, 250);
 
@@ -512,6 +569,12 @@ const replayBtn = document.getElementById("replayBtn") as HTMLButtonElement;
 const stopBtn = document.getElementById("stopBtn") as HTMLButtonElement;
 const replayHint = document.getElementById("replayHint")!;
 const maxFramesInput = document.getElementById("maxFrames") as HTMLInputElement;
+const replayProgress = document.getElementById("replayProgress")!;
+const replayProgressText = document.getElementById("replayProgressText")!;
+const replayBar = document.getElementById("replayBar") as HTMLProgressElement;
+let replayHideTimer = 0;
+/** Clouds received during the current replay, so "nothing appeared" can say so. */
+let replayClouds = 0;
 const methodSelect = document.getElementById("methodSelect") as HTMLSelectElement;
 const paramsBox = document.getElementById("params")!;
 const methodDesc = document.getElementById("methodDesc")!;

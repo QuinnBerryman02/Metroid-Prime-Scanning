@@ -505,7 +505,11 @@ def _fuse_keyframe(
     )
 
     cloud = None
-    if entry["fused"] % config.RECON_CLOUD_EVERY == 0 or entry["fused"] == 1:
+    if (
+        req.forceSnapshot
+        or entry["fused"] % config.RECON_CLOUD_EVERY == 0
+        or entry["fused"] == 1
+    ):
         pos, col, used = method.cloud(config.RECON_CLOUD_MAX)
         p_b64, c_b64 = encode_points(pos, col)
         cloud = ReconCloud(

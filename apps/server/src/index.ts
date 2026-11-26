@@ -21,6 +21,7 @@ import type {
   PlaneMsg,
   PoseBroadcastMsg,
   Quat,
+  ReconReplayMsg,
   ReconClearMsg,
   ReconCloudMsg,
   ReconFrameMsg,
@@ -267,6 +268,8 @@ app.get("/recon/methods", async (_req, reply) => {
 // cloud, and the pose breadcrumbs.
 
 let stopReplay: (() => void) | null = null;
+/** Bumped per run so every replay gets its own session id (see startReplay). */
+let replaySeq = 0;
 
 /** List the recorded runs available to replay. */
 app.get("/recon/logs", async () => {
@@ -307,22 +310,42 @@ async function startReplay(
   // maxFrames=1 replays only the first keyframe, which is how you look at one
   // frame's geometry without waiting out the whole walk. 0 means all of them.
   const files = maxFrames > 0 ? all.slice(0, maxFrames) : all;
-  const replayId = `replay-${session}`;
 
-  // Fresh slate, so a second replay does not stack on the first.
-  reconKeyframes.delete(replayId);
-  reconClouds.delete(replayId);
-  reconStats.delete(replayId);
-  planes.delete(replayId);
+  // A brand new session id for every run. Reusing one (it used to be just
+  // `replay-<session>`) meant the inference kept the previous run's *map* and
+  // its `fused` counter, so replaying the same recording twice fused the room
+  // into itself - a doubled cloud, slightly rotated - and then stopped
+  // emitting snapshots at all, because the every-Nth cloud gate was counting
+  // from the old run's total rather than from this one.
+  replaySeq += 1;
+  const replayId = `replay-${session}-${replaySeq}`;
+
+  const progress = (
+    index: number,
+    state: ReconReplayMsg["state"],
+  ): ReconReplayMsg => ({
+    type: "recon_replay",
+    sessionId: replayId,
+    source: session,
+    index,
+    total: files.length,
+    state,
+  });
+
   broadcast({ type: "recon_clear", sessionId: replayId } satisfies ReconClearMsg, "viewer");
+  // Progress from 0, so the viewer can show "running" before the first frame
+  // lands rather than looking dead.
+  broadcast(progress(0, "running"), "viewer");
   app.log.info(
     { session, frames: files.length, of: all.length, intervalMs, method },
     "replay starting",
   );
 
   void (async () => {
-    for (const file of files) {
+    for (let i = 0; i < files.length; i++) {
       if (stopped) break;
+      const file = files[i];
+      if (!file) break;
       try {
         const meta = JSON.parse(
           await readFile(join(dir, file), "utf8"),
@@ -351,6 +374,8 @@ async function startReplay(
           sharpness: meta.sharpness ?? 0,
           hitDistance: meta.hitDistance ?? null,
           record: false, // never re-record a replay
+          // A run always ends with geometry, wherever the every-Nth gate fell.
+          forceSnapshot: i === files.length - 1,
           method,
           params,
         };
@@ -369,8 +394,10 @@ async function startReplay(
       } catch (e) {
         app.log.warn({ file, err: e }, "replay frame failed");
       }
+      broadcast(progress(i + 1, stopped ? "stopped" : "running"), "viewer");
       await new Promise((r) => setTimeout(r, intervalMs));
     }
+    broadcast(progress(files.length, stopped ? "stopped" : "done"), "viewer");
     app.log.info({ session, stopped }, "replay finished");
   })();
   return files.length;
