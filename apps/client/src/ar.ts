@@ -28,9 +28,13 @@ import type { WebXRAnchorSystem } from "@babylonjs/core/XR/features/WebXRAnchorS
 import type { Camera } from "@babylonjs/core/Cameras/camera";
 import type { Obb, Quat, ScanResult, Vec3 } from "@metroid-scan/shared";
 import { installDebugOverlay, log } from "./lib/debug";
+import { createDiagnostics } from "./lib/report";
 import { GatewayClient } from "./lib/gateway";
 
 installDebugOverlay();
+const diag = createDiagnostics("ar");
+diag.installAutoSend();
+diag.info("ua", navigator.userAgent);
 log("ar.ts loaded (anchoring)");
 
 const sessionId = crypto.randomUUID();
@@ -45,6 +49,7 @@ const startBtn = document.getElementById("startBtn") as HTMLButtonElement;
 const hud = document.getElementById("hud")!;
 const scanBtn = document.getElementById("scanBtn") as HTMLButtonElement;
 const clearBtn = document.getElementById("clearBtn") as HTMLButtonElement;
+const reportBtn = document.getElementById("reportBtn") as HTMLButtonElement;
 const exitBtn = document.getElementById("exitBtn") as HTMLButtonElement;
 const statusEl = document.getElementById("status")!;
 
@@ -120,70 +125,116 @@ function viewFov(view: XRView): number {
 function captureNow(): CaptureFrame | null {
   const sm = xr?.baseExperience?.sessionManager;
   const gl = engine._gl;
-  if (!sm || !gl) return null;
+  diag.info("capture.hasSessionManager", Boolean(sm));
+  diag.info("capture.hasGl", Boolean(gl));
+  if (!sm || !gl) {
+    diag.error("capture", new Error(`missing ${sm ? "" : "session "}${gl ? "" : "gl"}`));
+    return null;
+  }
+  diag.info(
+    "capture.enabledFeatures",
+    (sm.session as unknown as { enabledFeatures?: string[] }).enabledFeatures ?? null,
+  );
+  diag.info("capture.glClass", gl.constructor?.name ?? "?");
+
   const frame = sm.currentFrame;
   const refSpace = sm.referenceSpace;
-  if (!frame || !refSpace) return null;
-  const pose = frame.getViewerPose(refSpace);
-  const view = pose?.views[0];
-  if (!view) return null;
+  const view = frame?.getViewerPose(refSpace)?.views?.[0];
+  if (!view) {
+    diag.error("capture", new Error("no XR view on this frame"));
+    return null;
+  }
+  diag.info(
+    "capture.viewCameraAttr",
+    Boolean((view as unknown as { camera?: unknown }).camera),
+  );
+
+  if (typeof XRWebGLBinding === "undefined") {
+    diag.error("capture", new Error("XRWebGLBinding is undefined"));
+    return null;
+  }
 
   let texture: WebGLTexture | null = null;
   try {
     // `getCameraImage` is the camera-access spec; not in this @types/webxr yet.
     const binding = new XRWebGLBinding(sm.session, gl) as unknown as {
-      getCameraImage(view: XRView): WebGLTexture | null;
+      getCameraImage?: (view: XRView) => WebGLTexture | null;
     };
+    diag.info("capture.getCameraImageType", typeof binding.getCameraImage);
+    if (typeof binding.getCameraImage !== "function") {
+      diag.error("capture", new TypeError("getCameraImage is not a function"));
+      return null;
+    }
     texture = binding.getCameraImage(view);
   } catch (e) {
-    log(`getCameraImage failed: ${String(e)}`);
+    diag.error("getCameraImage", e);
     return null;
   }
   if (!texture) {
-    log("camera-access unavailable (camera-access feature / permission?)");
+    diag.error("capture", new Error("getCameraImage returned null"));
     return null;
   }
+  diag.info("capture.textureClass", texture.constructor?.name ?? "?");
 
   const cam = (view as unknown as { camera?: { width: number; height: number } })
     .camera;
   const w = cam?.width ?? gl.drawingBufferWidth;
   const h = cam?.height ?? gl.drawingBufferHeight;
+  diag.info("capture.cameraWH", [w, h]);
 
-  const prevFb = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
-  const fb = gl.createFramebuffer()!;
-  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
-  const pixels = new Uint8Array(w * h * 4);
-  gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, prevFb);
-  gl.deleteFramebuffer(fb);
+  let pixels: Uint8Array;
+  try {
+    const prevFb = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+    const fb = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    diag.info(
+      "capture.framebufferStatus",
+      status === gl.FRAMEBUFFER_COMPLETE ? "complete" : status,
+    );
+    pixels = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    const glError = gl.getError();
+    if (glError) diag.info("capture.glError", glError);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, prevFb);
+    gl.deleteFramebuffer(fb);
+  } catch (e) {
+    diag.error("readPixels", e);
+    return null;
+  }
 
-  // WebGL is bottom-up; flip vertically and downscale into a JPEG.
-  const src = document.createElement("canvas");
-  src.width = w;
-  src.height = h;
-  src
-    .getContext("2d")!
-    .putImageData(new ImageData(new Uint8ClampedArray(pixels.buffer), w, h), 0, 0);
+  try {
+    // WebGL is bottom-up; flip vertically and downscale into a JPEG.
+    const src = document.createElement("canvas");
+    src.width = w;
+    src.height = h;
+    src
+      .getContext("2d")!
+      .putImageData(new ImageData(new Uint8ClampedArray(pixels), w, h), 0, 0);
 
-  const scale = Math.min(1, MAX_EDGE / Math.max(w, h));
-  const outW = Math.max(1, Math.round(w * scale));
-  const outH = Math.max(1, Math.round(h * scale));
-  const dst = document.createElement("canvas");
-  dst.width = outW;
-  dst.height = outH;
-  const ctx = dst.getContext("2d")!;
-  ctx.translate(0, outH);
-  ctx.scale(1, -1);
-  ctx.drawImage(src, 0, 0, outW, outH);
-  const url = dst.toDataURL("image/jpeg", 0.8);
+    const scale = Math.min(1, MAX_EDGE / Math.max(w, h));
+    const outW = Math.max(1, Math.round(w * scale));
+    const outH = Math.max(1, Math.round(h * scale));
+    const dst = document.createElement("canvas");
+    dst.width = outW;
+    dst.height = outH;
+    const ctx = dst.getContext("2d")!;
+    ctx.translate(0, outH);
+    ctx.scale(1, -1);
+    ctx.drawImage(src, 0, 0, outW, outH);
+    const url = dst.toDataURL("image/jpeg", 0.8);
 
-  return {
-    base64: url.slice(url.indexOf(",") + 1),
-    width: outW,
-    height: outH,
-    fovDeg: viewFov(view),
-  };
+    return {
+      base64: url.slice(url.indexOf(",") + 1),
+      width: outW,
+      height: outH,
+      fovDeg: viewFov(view),
+    };
+  } catch (e) {
+    diag.error("capture.encode", e);
+    return null;
+  }
 }
 
 // --- XR setup ---------------------------------------------------------------
@@ -241,10 +292,16 @@ async function enterAr() {
     startOverlay.style.display = "none";
     hud.style.display = "block";
     const session = xr.baseExperience.sessionManager.session;
+    const enabled =
+      (session as unknown as { enabledFeatures?: string[] }).enabledFeatures ?? [];
+    diag.info("session.enabledFeatures", enabled);
+    log(`features: ${enabled.join(", ") || "(none reported)"}`);
+    diag.info("session.blendMode", session.environmentBlendMode ?? null);
     session.addEventListener("end", () => {
       hud.style.display = "none";
       startOverlay.style.display = "flex";
       log("session ended");
+      void diag.send("session-end");
     });
     log("entered immersive-ar");
   } catch (e) {
@@ -315,7 +372,8 @@ async function scanAndAnchor() {
   setStatus("capturing…");
   const frame = await grabFrame();
   if (!frame) {
-    setStatus("capture failed — see log");
+    setStatus("capture failed — report sent");
+    void diag.send("capture-failed");
     return;
   }
   log(
@@ -494,6 +552,12 @@ scene.onBeforeRenderObservable.add(() => {
 startBtn.addEventListener("click", () => void enterAr());
 scanBtn.addEventListener("click", () => void scanAndAnchor());
 clearBtn.addEventListener("click", () => clearAnchors());
+reportBtn.addEventListener("click", () => {
+  setStatus("sending report…");
+  void diag
+    .send("manual")
+    .then((ok) => setStatus(ok ? "report sent ✓" : "report failed — check log"));
+});
 exitBtn.addEventListener("click", () => void xr?.baseExperience?.exitXRAsync());
 
 engine.runRenderLoop(() => scene.render());

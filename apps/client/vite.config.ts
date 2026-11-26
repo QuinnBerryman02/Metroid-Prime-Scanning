@@ -24,10 +24,19 @@ function diagReportSink(): Plugin {
     req.on("end", () => {
       try {
         mkdirSync(REPORT_DIR, { recursive: true });
+        // Reports carry a `kind` (capabilities / ar / ...) so they don't collide.
+        let kind = "capabilities";
+        try {
+          const parsed = JSON.parse(body) as { kind?: unknown };
+          if (typeof parsed.kind === "string" && parsed.kind) kind = parsed.kind;
+        } catch {
+          /* not JSON - keep the default */
+        }
+        const safe = kind.replace(/[^a-z0-9_-]/gi, "").slice(0, 40) || "report";
         const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-        const name = `capabilities-${stamp}.json`;
+        const name = `${safe}-${stamp}.json`;
         writeFileSync(path.join(REPORT_DIR, name), body);
-        writeFileSync(path.join(REPORT_DIR, "latest-capabilities.json"), body);
+        writeFileSync(path.join(REPORT_DIR, `latest-${safe}.json`), body);
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify({ ok: true, saved: `reports/${name}` }));
       } catch (e) {
