@@ -13,6 +13,7 @@
  */
 import { Engine } from "@babylonjs/core/Engines/engine";
 import { Scene } from "@babylonjs/core/scene";
+import { FreeCamera } from "@babylonjs/core/Cameras/freeCamera";
 import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
@@ -67,6 +68,14 @@ gateway.connect();
 const engine = new Engine(canvas, true, { stencil: true });
 const scene = new Scene(engine);
 scene.clearColor = new Color4(0, 0, 0, 0);
+
+// Babylon needs a scene camera *before* the XR rig takes over. Without one, the
+// first scene.render() throws "No camera defined", and because the engine
+// queues the next frame *after* the render callback, that single throw kills
+// the render loop for good (no hit-test -> Scan stays disabled). This fallback
+// is also saved as the "non-VR" camera the XR helper restores on exit.
+const fallbackCamera = new FreeCamera("fallback", new Vector3(0, 1.5, 0), scene);
+fallbackCamera.setTarget(new Vector3(0, 1.5, -1));
 
 const reticleMat = new StandardMaterial("reticleMat", scene);
 reticleMat.emissiveColor = new Color3(0.49, 0.97, 0.77);
@@ -304,6 +313,10 @@ async function enterAr() {
       void diag.send("session-end");
     });
     log("entered immersive-ar");
+    window.setTimeout(
+      () => log(`activeCamera: ${scene.activeCamera?.name ?? "NONE"}`),
+      600,
+    );
   } catch (e) {
     log(`enterXRAsync FAILED: ${String(e)}`);
     setStatus(`<b style="color:#ff6b6b">AR failed</b><br>${String(e)}`);
@@ -560,7 +573,16 @@ reportBtn.addEventListener("click", () => {
 });
 exitBtn.addEventListener("click", () => void xr?.baseExperience?.exitXRAsync());
 
-engine.runRenderLoop(() => scene.render());
+let renderErrors = 0;
+engine.runRenderLoop(() => {
+  if (!scene.activeCamera) return; // XR rig not ready yet
+  try {
+    scene.render();
+  } catch (e) {
+    // A throw here would stop the engine scheduling frames, so swallow it.
+    if (renderErrors++ < 3) diag.error("render", e);
+  }
+});
 window.addEventListener("resize", () => engine.resize());
 
 // --- boot -------------------------------------------------------------------
