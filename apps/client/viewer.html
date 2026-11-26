@@ -16,12 +16,27 @@
       #back { position: fixed; right: 12px; top: 12px; color: #7cf7c4;
         text-decoration: none; padding: 8px 12px; border: 1px solid #1e3a44;
         border-radius: 8px; background: rgba(4,12,15,.78); }
+      #replay { position: fixed; left: 12px; bottom: 12px; display: flex;
+        gap: 8px; align-items: center; padding: 8px 10px;
+        background: rgba(4,12,15,.82); border: 1px solid #1e3a44;
+        border-radius: 10px; }
+      #replay select, #replay button { font: inherit; padding: 6px 10px;
+        border-radius: 7px; border: 1px solid #2b4149; background: #12242b;
+        color: #eaf6f3; max-width: 42ch; }
+      #replayBtn { border-color: #1e7a5f; background: #0e3a2f; }
+      #replayHint { color: #8aa0a8; }
     </style>
   </head>
   <body>
     <canvas id="app"></canvas>
     <div id="status">connecting…</div>
     <a id="back" href="/">&larr; home</a>
+    <div id="replay">
+      <span id="replayHint">recorded runs:</span>
+      <select id="logSelect"></select>
+      <button id="replayBtn">Replay</button>
+      <button id="stopBtn">Stop</button>
+    </div>
     <script type="module" src="/src/viewer.ts"></script>
   </body>
 </html>

@@ -474,5 +474,71 @@ setInterval(() => {
   }
 }, 250);
 
+// --- offline replay ---------------------------------------------------------
+// Recorded keyframe runs (written by the inference service) can be replayed
+// through the live gateway, so the viewer sees them exactly as if a phone were
+// walking the room. This is the fast tuning loop: one recording, many settings.
+const logSelect = document.getElementById("logSelect") as HTMLSelectElement;
+const replayBtn = document.getElementById("replayBtn") as HTMLButtonElement;
+const stopBtn = document.getElementById("stopBtn") as HTMLButtonElement;
+const replayHint = document.getElementById("replayHint")!;
+
+async function loadLogs() {
+  try {
+    const res = await fetch("/api/recon/logs");
+    const data = (await res.json()) as {
+      logs?: { session: string; frames: number }[];
+      error?: string;
+    };
+    logSelect.innerHTML = "";
+    const logs = data.logs ?? [];
+    if (!logs.length) {
+      replayHint.textContent = data.error ? "log dir unreadable" : "no recorded runs";
+      replayBtn.disabled = true;
+      return;
+    }
+    for (const l of logs) {
+      const opt = document.createElement("option");
+      opt.value = l.session;
+      opt.textContent = `${l.session.slice(0, 12)}… (${l.frames})`;
+      logSelect.appendChild(opt);
+    }
+    replayHint.textContent = `${logs.length} run(s):`;
+    replayBtn.disabled = false;
+    log(
+      `logs: ${logs.map((l) => `${l.session}(${l.frames})`).join(" ")}`,
+    );
+  } catch (e) {
+    replayHint.textContent = "log list failed";
+    log(`logs fetch failed: ${String(e)}`);
+  }
+}
+
+function replayClear() {
+  // Drop whatever is on screen (live session or previous replay) before the
+  // new run starts, so the two never overlap.
+  clearKeyframes();
+  disposeCloud();
+}
+
+replayBtn.addEventListener("click", () => {
+  const session = logSelect.value;
+  if (!session) return;
+  replayClear();
+  void fetch("/api/recon/replay", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ session }),
+  })
+    .then((r) => (r.ok ? log(`replaying ${session}`) : log(`replay failed ${r.status}`)))
+    .catch((e) => log(`replay failed: ${String(e)}`));
+});
+stopBtn.addEventListener("click", () => {
+  void fetch("/api/recon/replay/stop", { method: "POST" }).then(() =>
+    log("replay stopped"),
+  );
+});
+void loadLogs();
+
 engine.runRenderLoop(() => scene.render());
 window.addEventListener("resize", () => engine.resize());

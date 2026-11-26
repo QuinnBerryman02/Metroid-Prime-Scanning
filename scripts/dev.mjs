@@ -75,7 +75,12 @@ try {
     cmd: process.execPath,
     args: [packageFile("tsx", "dist", "cli.mjs"), "watch", "src/index.ts"],
     cwd: join(root, "apps", "server"),
-  });
+    // Where recorded keyframe runs live, so the viewer can replay them.
+    env: {
+      ...process.env,
+      RECON_LOG_DIR: join(root, "services", "inference", "recon_log"),
+    },
+  })
   tasks.push({
     name: "client",
     cmd: process.execPath,
@@ -136,7 +141,7 @@ console.log("Starting full stack — inference + gateway + client (Ctrl+C to sto
 for (const task of tasks) {
   const child = spawn(task.cmd, task.args, {
     cwd: task.cwd,
-    env: process.env,
+    env: task.env ?? process.env,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });

@@ -9,6 +9,8 @@
  *
  * MS1 scope: role-based WebSocket hub + pose relay. Inference/world model are stubs.
  */
+import { readdir, readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import websocket, { type WebSocket } from "@fastify/websocket";
@@ -18,6 +20,7 @@ import type {
   ClientToServer,
   PlaneMsg,
   PoseBroadcastMsg,
+  Quat,
   ReconClearMsg,
   ReconCloudMsg,
   ReconFrameMsg,
@@ -25,6 +28,7 @@ import type {
   ScanRequest,
   ScanResult,
   ServerToClient,
+  Vec3,
   WorldDeltaMsg,
   WorldObject,
 } from "@metroid-scan/shared";
@@ -32,6 +36,24 @@ import type {
 const PORT = Number(process.env.PORT ?? 3000);
 const HOST = process.env.HOST ?? "0.0.0.0";
 const INFERENCE_URL = process.env.INFERENCE_URL ?? "http://127.0.0.1:8000";
+// Recorded keyframe runs, written by the inference service (RECON_RECORD=1).
+const RECON_LOG_DIR =
+  process.env.RECON_LOG_DIR ??
+  resolve(process.cwd(), "..", "..", "services", "inference", "recon_log");
+const REPLAY_INTERVAL_MS = Number(process.env.REPLAY_INTERVAL_MS ?? 700);
+
+/** One recorded frame's metadata (the .json sidecar, minus the image). */
+interface RecordedFrame {
+  position?: Vec3;
+  quaternion?: Quat;
+  pose?: number[];
+  fovDeg?: number;
+  width?: number;
+  height?: number;
+  sharpness?: number;
+  hitDistance?: number | null;
+  planes?: PlaneMsg[];
+}
 
 type Role = "device" | "viewer";
 
@@ -204,6 +226,155 @@ app.get("/health", async () => ({
 
 app.get("/world", async () => ({ objects: [...world.values()] }));
 
+function handleReconFrame(msg: ReconFrameMsg) {
+  const list = reconKeyframes.get(msg.sessionId) ?? [];
+  const kf: ReconKeyframeMsg = {
+    type: "recon_keyframe",
+    sessionId: msg.sessionId,
+    frameId: msg.frameId,
+    index: list.length,
+    position: msg.position,
+    quaternion: msg.quaternion,
+    fovDeg: msg.fovDeg,
+    width: msg.width,
+    height: msg.height,
+    sharpness: msg.sharpness,
+    at: Date.now(),
+  };
+  list.push(kf);
+  if (list.length > KEYFRAME_REPLAY_MAX) list.splice(0, list.length - KEYFRAME_REPLAY_MAX);
+  reconKeyframes.set(msg.sessionId, list);
+  broadcast(kf, "viewer");
+  broadcastReconStatus(msg.sessionId);
+  void forwardReconFrame(msg);
+}
+
+// --- offline replay ---------------------------------------------------------
+// Replays a recorded run through the *live* pipeline, so the viewer sees it
+// exactly as if a phone were walking the room: keyframes, planes, the fused
+// cloud, and the pose breadcrumbs.
+
+let stopReplay: (() => void) | null = null;
+
+/** List the recorded runs available to replay. */
+app.get("/recon/logs", async () => {
+  try {
+    const entries = await readdir(RECON_LOG_DIR, { withFileTypes: true });
+    const logs: { session: string; frames: number }[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const files = await readdir(join(RECON_LOG_DIR, entry.name));
+      logs.push({
+        session: entry.name,
+        frames: files.filter((f) => f.endsWith(".json")).length,
+      });
+    }
+    logs.sort((a, b) => a.session.localeCompare(b.session));
+    return { dir: RECON_LOG_DIR, logs };
+  } catch (e) {
+    app.log.warn({ err: e }, "recon log dir unreadable");
+    return { dir: RECON_LOG_DIR, logs: [], error: String(e) };
+  }
+});
+
+async function startReplay(session: string, intervalMs: number) {
+  stopReplay?.();
+  let stopped = false;
+  stopReplay = () => {
+    stopped = true;
+  };
+
+  const dir = join(RECON_LOG_DIR, session);
+  const files = (await readdir(dir)).filter((f) => f.endsWith(".json")).sort();
+  const replayId = `replay-${session}`;
+
+  // Fresh slate, so a second replay does not stack on the first.
+  reconKeyframes.delete(replayId);
+  reconClouds.delete(replayId);
+  reconStats.delete(replayId);
+  planes.delete(replayId);
+  broadcast({ type: "recon_clear", sessionId: replayId } satisfies ReconClearMsg, "viewer");
+  app.log.info({ session, frames: files.length, intervalMs }, "replay starting");
+
+  void (async () => {
+    for (const file of files) {
+      if (stopped) break;
+      try {
+        const meta = JSON.parse(
+          await readFile(join(dir, file), "utf8"),
+        ) as RecordedFrame;
+        const jpg = await readFile(join(dir, file.replace(/\.json$/, ".jpg")));
+
+        // Planes as they were at that moment - the scale fit needs them.
+        const seen = planes.get(replayId) ?? new Map<number, PlaneMsg>();
+        for (const p of meta.planes ?? []) {
+          seen.set(p.id, { ...p, type: "plane", sessionId: replayId, action: "added" });
+        }
+        planes.set(replayId, seen);
+
+        const msg: ReconFrameMsg = {
+          type: "recon_frame",
+          sessionId: replayId,
+          frameId: `replay-${file.replace(/\.json$/, "")}`,
+          position: meta.position ?? [0, 0, 0],
+          quaternion: meta.quaternion ?? [0, 0, 0, 1],
+          pose: meta.pose ?? [],
+          fovDeg: meta.fovDeg ?? 60,
+          width: meta.width ?? 0,
+          height: meta.height ?? 0,
+          image: jpg.toString("base64"),
+          reason: "manual",
+          sharpness: meta.sharpness ?? 0,
+          hitDistance: meta.hitDistance ?? null,
+          record: false, // never re-record a replay
+        };
+        broadcast(
+          {
+            type: "pose",
+            sessionId: replayId,
+            position: msg.position,
+            quaternion: msg.quaternion,
+            forward: [0, 0, -1],
+            tracking: "tracked",
+          },
+          "viewer",
+        );
+        handleReconFrame(msg);
+      } catch (e) {
+        app.log.warn({ file, err: e }, "replay frame failed");
+      }
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    app.log.info({ session, stopped }, "replay finished");
+  })();
+}
+
+app.post("/recon/replay", async (req, reply) => {
+  const body = req.body as { session?: string; intervalMs?: number } | undefined;
+  const session = body?.session;
+  if (!session) {
+    reply.code(400);
+    return { error: "missing session" };
+  }
+  if (!/^[A-Za-z0-9._-]+$/.test(session)) {
+    reply.code(400);
+    return { error: "bad session name" };
+  }
+  try {
+    await startReplay(session, body?.intervalMs ?? REPLAY_INTERVAL_MS);
+  } catch (e) {
+    reply.code(404);
+    return { error: `cannot replay ${session}: ${String(e)}` };
+  }
+  return { ok: true, session };
+});
+
+app.post("/recon/replay/stop", async () => {
+  stopReplay?.();
+  stopReplay = null;
+  return { ok: true };
+});
+
 /**
  * MS3.0 progress: our own keyframe counters, plus whatever the inference
  * service reports (proxied, so a viewer only ever talks to the gateway).
@@ -340,33 +511,9 @@ app.register(async (f) => {
           broadcast(clear, "viewer");
           break;
         }
-        case "recon_frame": {
-          const list = reconKeyframes.get(msg.sessionId) ?? [];
-          const kf: ReconKeyframeMsg = {
-            type: "recon_keyframe",
-            sessionId: msg.sessionId,
-            frameId: msg.frameId,
-            index: list.length,
-            position: msg.position,
-            quaternion: msg.quaternion,
-            fovDeg: msg.fovDeg,
-            width: msg.width,
-            height: msg.height,
-            sharpness: msg.sharpness,
-            at: Date.now(),
-          };
-          list.push(kf);
-          if (list.length > KEYFRAME_REPLAY_MAX) list.splice(0, list.length - KEYFRAME_REPLAY_MAX);
-          reconKeyframes.set(msg.sessionId, list);
-          app.log.info(
-            { sessionId: msg.sessionId, index: kf.index, reason: msg.reason },
-            "recon keyframe",
-          );
-          broadcast(kf, "viewer");
-          broadcastReconStatus(msg.sessionId);
-          void forwardReconFrame(msg);
+        case "recon_frame":
+          handleReconFrame(msg);
           break;
-        }
         case "plane": {
           const perSession = planes.get(msg.sessionId) ?? new Map<number, PlaneMsg>();
           if (msg.action === "removed") perSession.delete(msg.id);

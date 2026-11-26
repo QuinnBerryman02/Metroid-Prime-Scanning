@@ -262,7 +262,7 @@ def _record_keyframe(req: ReconFrameRequest, raw: bytes) -> None:
     the same frames under different scales, voxel sizes and methods and compare
     them without touching the phone.
     """
-    if not config.RECON_RECORD:
+    if not config.RECON_RECORD or not req.record:
         return
     try:
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in req.sessionId)

@@ -242,6 +242,11 @@ export interface ReconFrameMsg {
   /** Laplacian variance of the greyscale frame (higher = sharper). */
   sharpness: number;
   /**
+   * Record this frame to disk? False when replaying a recording, so a replay
+   * does not duplicate the log it is reading from.
+   */
+  record?: boolean;
+  /**
    * Metric distance from the reticle to the ARCore hit-test surface, if any.
    * An independent scale reference: the server can compare `rel_depth` at the
    * reticle against a known metric depth and see whether the plane-based fit

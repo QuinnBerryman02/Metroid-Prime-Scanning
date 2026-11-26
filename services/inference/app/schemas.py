@@ -129,6 +129,8 @@ class ReconFrameRequest(BaseModel):
     sharpness: float = 0.0
     # Metric distance from the reticle to the ARCore hit-test surface, if any.
     hitDistance: float | None = None
+    # False when this frame is being replayed from a recording.
+    record: bool = True
     # Current metric ARCore planes, attached by the gateway (for the scale fit).
     planes: list[dict] = Field(default_factory=list)
 
