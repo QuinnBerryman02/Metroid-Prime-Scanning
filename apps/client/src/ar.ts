@@ -397,6 +397,28 @@ let kfLastMs = 0;
 let kfLastPos: Vector3 | null = null;
 let kfLastQuat: Quaternion | null = null;
 
+/**
+ * Row-major 4x4 `worldFromCamera` in the OpenCV convention (+x right, +y down,
+ * +z forward) - the frame the server unprojects and fuses in. Built by hand so
+ * we never have to reason about Babylon's left-handed, +y-up camera basis.
+ */
+function cameraWorldMatrix(camera: Camera): number[] {
+  const p = camera.globalPosition;
+  const right = camera.getDirection(Vector3.Right()).normalize();
+  const up = camera.getDirection(Vector3.Up()).normalize();
+  const forward = camera.getDirection(Vector3.Forward()).normalize();
+  const x = [right.x, right.y, right.z];
+  const y = [-up.x, -up.y, -up.z]; // OpenCV +y is down
+  const z = [forward.x, forward.y, forward.z];
+  // Columns are the axes: world = M * [x, y, z, 1]^T
+  return [
+    x[0]!, y[0]!, z[0]!, p.x,
+    x[1]!, y[1]!, z[1]!, p.y,
+    x[2]!, y[2]!, z[2]!, p.z,
+    0, 0, 0, 1,
+  ];
+}
+
 /** Angle between two rotations, in radians. */
 function quatAngle(a: Quaternion, b: Quaternion): number {
   const dot = Math.min(1, Math.abs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w));
@@ -445,6 +467,7 @@ async function maybeKeyframe() {
       frameId: `${sessionId}-kf${kfCount}`,
       position: [pos.x, pos.y, pos.z],
       quaternion: [quat.x, quat.y, quat.z, quat.w],
+      pose: cameraWorldMatrix(cam),
       fovDeg: frame.fovDeg,
       width: frame.width,
       height: frame.height,

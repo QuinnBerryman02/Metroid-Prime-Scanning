@@ -19,6 +19,7 @@ import type {
   PlaneMsg,
   PoseBroadcastMsg,
   ReconClearMsg,
+  ReconCloudMsg,
   ReconFrameMsg,
   ReconKeyframeMsg,
   ScanRequest,
@@ -51,6 +52,8 @@ const planes = new Map<string, Map<number, PlaneMsg>>();
 // Capped so a long session cannot grow without bound.
 const KEYFRAME_REPLAY_MAX = 200;
 const reconKeyframes = new Map<string, ReconKeyframeMsg[]>();
+// Latest cloud snapshot per session, so a late viewer gets the map immediately.
+const reconClouds = new Map<string, ReconCloudMsg>();
 
 function broadcastReconStatus(sessionId: string) {
   const list = reconKeyframes.get(sessionId) ?? [];
@@ -65,17 +68,57 @@ function broadcastReconStatus(sessionId: string) {
   );
 }
 
-/** Hand a keyframe to the inference service. Never block the socket on it. */
+interface InferenceCloud {
+  count: number;
+  positions: string;
+  colors: string;
+  voxel: number;
+  scaleA: number;
+  scaleB: number;
+  scaleMethod: string;
+  scaleRms: number;
+  scaleSamples: number;
+}
+
+/**
+ * Hand a keyframe to the inference service and relay whatever comes back.
+ * Never block the socket on it - the keyframe broadcast has already happened.
+ *
+ * The session's current metric planes ride along: the inference needs them to
+ * recover the depth model's metric scale (MS3.1).
+ */
 async function forwardReconFrame(msg: ReconFrameMsg) {
+  const currentPlanes = [...(planes.get(msg.sessionId)?.values() ?? [])];
   try {
     const res = await fetch(`${INFERENCE_URL}/recon/frame`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(msg),
+      body: JSON.stringify({ ...msg, planes: currentPlanes }),
     });
     if (!res.ok) {
       app.log.warn({ status: res.status }, "inference /recon/frame failed");
+      return;
     }
+    const data = (await res.json()) as {
+      cloud?: InferenceCloud | null;
+      voxels?: number;
+      fused?: number;
+      timing?: Record<string, number>;
+    };
+    if (!data.cloud) return;
+    const cloud: ReconCloudMsg = {
+      type: "recon_cloud",
+      sessionId: msg.sessionId,
+      at: Date.now(),
+      voxels: data.voxels ?? 0,
+      ...data.cloud,
+    };
+    reconClouds.set(msg.sessionId, cloud);
+    app.log.info(
+      { voxels: cloud.voxels, points: cloud.count, timing: data.timing },
+      "recon cloud",
+    );
+    broadcast(cloud, "viewer");
   } catch (e) {
     app.log.warn({ err: e }, "inference /recon/frame unreachable");
   }
@@ -196,6 +239,7 @@ app.register(async (f) => {
     for (const list of anchors.values()) for (const a of list) send(socket, a);
     for (const list of planes.values()) for (const a of list.values()) send(socket, a);
     for (const list of reconKeyframes.values()) for (const kf of list) send(socket, kf);
+    for (const cloud of reconClouds.values()) send(socket, cloud);
 
     socket.on("message", (raw: Buffer, isBinary: boolean) => {
       if (isBinary) return; // binary frames handled in a later milestone
@@ -290,6 +334,7 @@ app.register(async (f) => {
       clients.delete(socket);
       if (state?.role === "device") {
         latestPose.delete(state.sessionId);
+        reconClouds.delete(state.sessionId);
         if (reconKeyframes.delete(state.sessionId)) {
           broadcast(
             { type: "recon_clear", sessionId: state.sessionId } satisfies ReconClearMsg,

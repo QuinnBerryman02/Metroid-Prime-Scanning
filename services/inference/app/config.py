@@ -60,3 +60,18 @@ DEPTH_IR = os.environ.get(
 
 # Horizontal field of view used to build intrinsics (overridable per request).
 FOV_DEG = float(os.environ.get("FOV_DEG", "60"))
+
+# --- dense reconstruction (MS3.1/MS3.2, docs/RECONSTRUCTION.md) -----------
+# Fusion voxel size. 2 cm is the fidelity target but costs ~180 ms/frame on its
+# own (services/inference/scripts/bench_voxel.py); 5 cm is ~55 ms. Start coarse.
+RECON_VOXEL = float(os.environ.get("RECON_VOXEL", "0.05"))
+RECON_CAPACITY = int(os.environ.get("RECON_CAPACITY", "3000000"))
+# Unproject every Nth pixel of the depth map.
+RECON_STRIDE = int(os.environ.get("RECON_STRIDE", "2"))
+# Ignore depth outside this metric range (the depth model has no idea).
+RECON_MIN_DEPTH = float(os.environ.get("RECON_MIN_DEPTH", "0.2"))
+RECON_MAX_DEPTH = float(os.environ.get("RECON_MAX_DEPTH", "12.0"))
+# Send a cloud snapshot to viewers every Nth keyframe (keeps the wire bounded).
+RECON_CLOUD_EVERY = int(os.environ.get("RECON_CLOUD_EVERY", "4"))
+RECON_CLOUD_VOXEL = float(os.environ.get("RECON_CLOUD_VOXEL", "0.12"))
+RECON_CLOUD_MAX = int(os.environ.get("RECON_CLOUD_MAX", "30000"))

@@ -118,22 +118,53 @@ class ReconFrameRequest(BaseModel):
     # Camera world pose at the capture instant (ARCore `local` frame).
     position: list[float] = Field(default_factory=list)
     quaternion: list[float] = Field(default_factory=list)
+    # Row-major 4x4 worldFromCamera in the OpenCV camera convention (+y down).
+    # This is what fusion actually uses; position/quaternion are for the viewer.
+    pose: list[float] = Field(default_factory=list)
     fovDeg: float = 60.0
     width: int = 0
     height: int = 0
     image: str = ""
     reason: str = ""
     sharpness: float = 0.0
+    # Current metric ARCore planes, attached by the gateway (for the scale fit).
+    planes: list[dict] = Field(default_factory=list)
+
+
+class ReconCloud(BaseModel):
+    """A decimated point-cloud snapshot for the viewer (base64 buffers)."""
+
+    count: int
+    positions: str  # base64 little-endian float32, xyz triples
+    colors: str  # base64 uint8, rgb triples
+    voxel: float = 0.0
+    scaleA: float = 0.0
+    scaleB: float = 0.0
+    scaleMethod: str = ""
+    scaleRms: float = 0.0
+    scaleSamples: int = 0
 
 
 class ReconStatusResponse(BaseModel):
     keyframes: int = 0
+    fused: int = 0
+    skipped: int = 0
     sessions: dict[str, int] = Field(default_factory=dict)
     lastFrameId: str | None = None
     lastJpegBytes: int = 0
     lastMs: float | None = None
+    voxels: int = 0
+    scaleA: float | None = None
+    scaleB: float | None = None
+    scaleMethod: str | None = None
 
 
 class ReconFrameResponse(BaseModel):
     ok: bool = True
     keyframes: int = 0
+    # Frames this session's map has actually fused (blur/scale failures skip).
+    fused: int = 0
+    skipped: int = 0
+    voxels: int = 0
+    cloud: ReconCloud | None = None
+    timing: dict[str, float] = Field(default_factory=dict)

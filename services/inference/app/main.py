@@ -26,6 +26,7 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Any
 
 import cv2
@@ -44,11 +45,19 @@ from .lifting import (
     unproject_mask,
 )
 from .methods import METHODS, METHOD_SPECS, Segmenter, describe, device_for
+from .fusion import (
+    VoxelMap,
+    encode_points,
+    fit_metric_scale,
+    pose_to_matrix,
+    unproject_depth,
+)
 from .schemas import (
     Aimed,
     DepthResult,
     Detection,
     Obb,
+    ReconCloud,
     ReconFrameRequest,
     ReconFrameResponse,
     ReconStatusResponse,
@@ -210,66 +219,193 @@ def methods() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# MS3.0 - reconstruction keyframes (docs/RECONSTRUCTION.md)
+# MS3.1 + MS3.2 - dense reconstruction (docs/RECONSTRUCTION.md sections 6-7)
 # ---------------------------------------------------------------------------
+
+# One frame at a time through the GPU + fusion path. Frames that arrive while
+# we are busy are dropped rather than queued - stale depth is worse than none.
+_recon_lock = threading.Lock()
 
 
 def _recon_state() -> dict[str, Any]:
-    return state.setdefault("recon", {"keyframes": 0, "sessions": {}, "last": None})
+    return state.setdefault(
+        "recon",
+        {"keyframes": 0, "fused": 0, "skipped": 0, "sessions": {}, "maps": {}},
+    )
+
+
+def _recon_entry(rs: dict[str, Any], session_id: str) -> dict[str, Any]:
+    """Per-session voxel map + cached scale. Small LRU across sessions."""
+    maps: dict[str, Any] = rs["maps"]
+    entry = maps.get(session_id)
+    if entry is None:
+        while len(maps) >= 4:
+            maps.pop(next(iter(maps)))
+        entry = {
+            "voxels": VoxelMap(config.RECON_VOXEL, config.RECON_CAPACITY),
+            "scale": None,
+            "frames": 0,
+        }
+        maps[session_id] = entry
+    return entry
+
+
+def _skip(rs: dict[str, Any], entry: dict[str, Any], why: str) -> ReconFrameResponse:
+    rs["skipped"] += 1
+    log.info("recon skipped (%s)", why)
+    return ReconFrameResponse(
+        keyframes=rs["keyframes"],
+        fused=rs["fused"],
+        skipped=rs["skipped"],
+        voxels=entry["voxels"].size,
+    )
+
+
+def _fuse_keyframe(
+    req: ReconFrameRequest, rs: dict[str, Any], entry: dict[str, Any]
+) -> ReconFrameResponse:
+    """Depth -> metric scale -> unproject -> fuse. MS3.1 + MS3.2."""
+    depth = state.get("depth")
+    if depth is None:
+        return _skip(rs, entry, "depth model unavailable")
+    if not req.image or len(req.pose) != 16:
+        return _skip(rs, entry, "missing image/pose")
+
+    t0 = time.perf_counter()
+    try:
+        raw = base64.b64decode(req.image, validate=True)
+        pil = Image.open(io.BytesIO(raw)).convert("RGB")
+    except Exception as e:  # noqa: BLE001
+        return _skip(rs, entry, f"bad image: {e}")
+    img = np.array(pil)
+    height, width = img.shape[:2]
+    rs["last"] = {
+        "frameId": req.frameId,
+        "sessionId": req.sessionId,
+        "width": width,
+        "height": height,
+        "fovDeg": req.fovDeg,
+        "sharpness": req.sharpness,
+        "jpegBytes": len(raw),
+        "at": time.time() * 1000,
+    }
+
+    timing: dict[str, float] = {}
+
+    # 1. relative depth (inverse of the model's disparity), metric scale unknown
+    t = time.perf_counter()
+    rel = depth.predict_depth(pil)
+    rel = cv2.medianBlur(rel, 5)
+    timing["depth"] = round((time.perf_counter() - t) * 1000, 2)
+
+    world_from_cam = pose_to_matrix(req.pose)
+    intr = intrinsics_from_fov(width, height, req.fovDeg or config.FOV_DEG)
+
+    # 2. MS3.1 - metric scale, from ARCore's planes (fall back to the last good)
+    t = time.perf_counter()
+    fit = fit_metric_scale(req.planes, world_from_cam, intr, rel)
+    if fit is not None:
+        entry["scale"] = fit
+    elif entry["scale"] is not None:
+        fit = replace(entry["scale"], method="cached")
+    timing["scale"] = round((time.perf_counter() - t) * 1000, 2)
+    if fit is None:
+        return _skip(rs, entry, "no metric scale (no usable planes yet)")
+
+    # 3. MS3.2 - unproject and fuse into the world voxel map
+    t = time.perf_counter()
+    points, ys, xs = unproject_depth(
+        rel,
+        world_from_cam,
+        intr,
+        fit,
+        stride=config.RECON_STRIDE,
+        min_depth=config.RECON_MIN_DEPTH,
+        max_depth=config.RECON_MAX_DEPTH,
+    )
+    if points.shape[0]:
+        entry["voxels"].integrate(points, img[ys, xs].astype(np.float64))
+    timing["fuse"] = round((time.perf_counter() - t) * 1000, 2)
+    timing["total"] = round((time.perf_counter() - t0) * 1000, 2)
+
+    rs["fused"] += 1
+    entry["frames"] += 1
+    voxels: VoxelMap = entry["voxels"]
+    log.info(
+        "recon %s fused %d pts -> %d voxels | scale %s a=%.3f b=%.3f rms=%.3f "
+        "(%d planes) %.0f ms",
+        req.frameId,
+        points.shape[0],
+        voxels.size,
+        fit.method,
+        fit.a,
+        fit.b,
+        fit.rms,
+        len(req.planes),
+        timing["total"],
+    )
+
+    cloud = None
+    if entry["frames"] % config.RECON_CLOUD_EVERY == 0 or entry["frames"] == 1:
+        pos, col, used = voxels.snapshot(config.RECON_CLOUD_VOXEL, config.RECON_CLOUD_MAX)
+        p_b64, c_b64 = encode_points(pos, col)
+        cloud = ReconCloud(
+            count=int(pos.shape[0]),
+            positions=p_b64,
+            colors=c_b64,
+            voxel=used,
+            scaleA=fit.a,
+            scaleB=fit.b,
+            scaleMethod=fit.method,
+            scaleRms=fit.rms,
+            scaleSamples=fit.samples,
+        )
+
+    return ReconFrameResponse(
+        keyframes=rs["keyframes"],
+        fused=rs["fused"],
+        skipped=rs["skipped"],
+        voxels=voxels.size,
+        cloud=cloud,
+        timing=timing,
+    )
 
 
 @app.post("/recon/frame", response_model=ReconFrameResponse)
 def recon_frame(req: ReconFrameRequest) -> ReconFrameResponse:
-    """Accept a streamed keyframe.
-
-    MS3.0 only counts and validates it - MS3.2 adds the depth + fusion stage.
-    """
+    """Accept a streamed keyframe: depth -> metric scale -> fuse."""
     rs = _recon_state()
     rs["keyframes"] += 1
     sessions: dict[str, int] = rs["sessions"]
     sessions[req.sessionId] = sessions.get(req.sessionId, 0) + 1
+    entry = _recon_entry(rs, req.sessionId)
 
-    jpeg_bytes = 0
-    if req.image:
-        try:
-            jpeg_bytes = len(base64.b64decode(req.image, validate=True))
-        except (binascii.Error, ValueError):
-            log.warning("keyframe %s: bad base64 image", req.frameId)
-    rs["last"] = {
-        "frameId": req.frameId,
-        "sessionId": req.sessionId,
-        "width": req.width,
-        "height": req.height,
-        "fovDeg": req.fovDeg,
-        "sharpness": req.sharpness,
-        "jpegBytes": jpeg_bytes,
-        "at": time.time() * 1000,
-    }
-    n = rs["keyframes"]
-    if n % 10 == 1:
-        log.info(
-            "keyframe %d (%s) %dx%d %.1f kB lap=%.0f [%s]",
-            n,
-            req.reason or "?",
-            req.width,
-            req.height,
-            jpeg_bytes / 1024,
-            req.sharpness,
-            req.sessionId,
-        )
-    return ReconFrameResponse(keyframes=n)
+    if not _recon_lock.acquire(blocking=False):
+        return _skip(rs, entry, "busy (previous frame still fusing)")
+    try:
+        return _fuse_keyframe(req, rs, entry)
+    finally:
+        _recon_lock.release()
 
 
 @app.get("/recon/status", response_model=ReconStatusResponse)
 def recon_status() -> ReconStatusResponse:
-    rs = state.get("recon") or {"keyframes": 0, "sessions": {}, "last": None}
+    rs = _recon_state()
     last = rs.get("last") or {}
+    entry = rs["maps"].get(last.get("sessionId")) if last else None
+    fit = entry.get("scale") if entry else None
     return ReconStatusResponse(
         keyframes=rs["keyframes"],
+        fused=rs["fused"],
+        skipped=rs["skipped"],
         sessions=rs["sessions"],
         lastFrameId=last.get("frameId"),
         lastJpegBytes=last.get("jpegBytes", 0),
         lastMs=last.get("at"),
+        voxels=entry["voxels"].size if entry else 0,
+        scaleA=fit.a if fit else None,
+        scaleB=fit.b if fit else None,
+        scaleMethod=fit.method if fit else None,
     )
 
 

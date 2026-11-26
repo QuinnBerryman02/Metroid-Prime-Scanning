@@ -28,6 +28,7 @@ export interface GatewayHandlers {
     msg: Extract<ServerToClient, { type: "recon_keyframe" }>,
   ) => void;
   onReconStatus?: (msg: Extract<ServerToClient, { type: "recon_status" }>) => void;
+  onReconCloud?: (msg: Extract<ServerToClient, { type: "recon_cloud" }>) => void;
   onReconClear?: (msg: Extract<ServerToClient, { type: "recon_clear" }>) => void;
   onStatus?: (status: GatewayStatus, detail?: string) => void;
 }
@@ -79,6 +80,7 @@ export class GatewayClient {
         this.handlers.onReconKeyframe?.(msg);
       else if (msg.type === "recon_status") this.handlers.onReconStatus?.(msg);
       else if (msg.type === "recon_clear") this.handlers.onReconClear?.(msg);
+      else if (msg.type === "recon_cloud") this.handlers.onReconCloud?.(msg);
     };
   }
 

@@ -119,8 +119,12 @@ Fused reconstruction (the new work):
       pose + fov are sent device -> gateway -> inference; the gateway broadcasts
       metadata to viewers (breadcrumb frustums) and `GET /recon/status` reports
       counts. Images ride as base64 JSON (see the protocol note).
-- [ ] **MS3.1** metric scale: affine fit `Z = a·(1/d_rel) + b` from ARCore planes.
-- [ ] **MS3.2** voxel fusion in the ARCore frame; viewer renders the live cloud.
+- [x] **MS3.1** metric scale: robust affine fit `Z = a·(1/d_rel) + b` against
+      ARCore's metric planes, with a pure-scale fallback when only one depth
+      level is visible and a cached fit when nothing is. (`app/fusion.py`)
+- [x] **MS3.2** voxel fusion in the ARCore frame (running-mean `VoxelMap`), with
+      a decimated snapshot streamed to the viewer, which renders it as points.
+      Verified end-to-end on the sample image; no GPU needed (see `docs/FUSION.md`).
 - [ ] **MS3.3** structure: ARCore + RANSAC planes, excluded from the object pool.
 - [ ] **MS3.4** DBSCAN clustering + scoring + tracking -> candidate objects with IDs.
 - [ ] **MS3.5** multi-view render -> CLIP labelling.

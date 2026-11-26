@@ -16,7 +16,7 @@ import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
-import type { PlaneMsg, ReconKeyframeMsg } from "@metroid-scan/shared";
+import type { PlaneMsg, ReconCloudMsg, ReconKeyframeMsg } from "@metroid-scan/shared";
 import { installDebugOverlay, log } from "./lib/debug";
 import { GatewayClient } from "./lib/gateway";
 
@@ -264,6 +264,74 @@ function clearKeyframes() {
   reconKeyframes = 0;
 }
 
+// --- fused point cloud (MS3.2) ----------------------------------------------
+// One mesh, rebuilt per snapshot. `pointsCloud` draws the vertices as discs,
+// the cheapest way to show ~30k points in Babylon. The material is created
+// once so we do not recompile its shader on every snapshot.
+const cloudMaterial = (() => {
+  const m = new StandardMaterial("cloudMat", scene);
+  m.pointsCloud = true;
+  m.pointSize = 3;
+  // Unlit: the cloud carries its own colour, so lighting would only darken it.
+  m.disableLighting = true;
+  m.diffuseColor = new Color3(1, 1, 1);
+  m.emissiveColor = new Color3(0, 0, 0);
+  return m;
+})();
+
+let cloudMesh: Mesh | null = null;
+let cloudPoints = 0;
+let cloudVoxels = 0;
+let cloudScale = "";
+
+function decodeBase64(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function disposeCloud() {
+  cloudMesh?.dispose();
+  cloudMesh = null;
+  cloudPoints = 0;
+  cloudVoxels = 0;
+  cloudScale = "";
+}
+
+function renderCloud(msg: ReconCloudMsg) {
+  if (!msg.count) {
+    disposeCloud();
+    return;
+  }
+  const posBytes = decodeBase64(msg.positions);
+  const colBytes = decodeBase64(msg.colors);
+  // little-endian float32 xyz triples, per the protocol
+  const positions = new Float32Array(posBytes.buffer, posBytes.byteOffset, msg.count * 3);
+  const colors = new Float32Array(msg.count * 4);
+  for (let i = 0; i < msg.count; i++) {
+    colors[i * 4] = (colBytes[i * 3] ?? 0) / 255;
+    colors[i * 4 + 1] = (colBytes[i * 3 + 1] ?? 0) / 255;
+    colors[i * 4 + 2] = (colBytes[i * 3 + 2] ?? 0) / 255;
+    colors[i * 4 + 3] = 1;
+  }
+
+  const mesh = new Mesh("cloud", scene);
+  const vd = new VertexData();
+  vd.positions = new Float32Array(positions); // copy: the source buffer is reused
+  vd.colors = colors;
+  vd.applyToMesh(mesh);
+  mesh.material = cloudMaterial;
+  mesh.useVertexColors = true;
+  mesh.isPickable = false;
+
+  cloudMesh?.dispose();
+  cloudMesh = mesh;
+  cloudPoints = msg.count;
+  cloudVoxels = msg.voxels;
+  cloudScale = `${msg.scaleMethod} a=${msg.scaleA.toFixed(3)} b=${msg.scaleB.toFixed(3)}`;
+}
+
 const gateway = new GatewayClient("viewer", sessionId, {
   onStatus: (s) => {
     log(`ws ${s}`);
@@ -291,7 +359,11 @@ const gateway = new GatewayClient("viewer", sessionId, {
   onReconStatus: (msg) => {
     reconKeyframes = msg.keyframes;
   },
-  onReconClear: () => clearKeyframes(),
+  onReconCloud: (msg) => renderCloud(msg),
+  onReconClear: () => {
+    clearKeyframes();
+    disposeCloud();
+  },
   onAnchor: (msg) => {
     const [sx, sy, sz] = msg.size;
     let mesh = anchorMeshes.get(msg.id);
@@ -346,6 +418,8 @@ setInterval(() => {
       `pos ${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}\n` +
       `${planeMeshes.size} plane(s)${planesVisible ? "" : " (hidden, P)"}\n` +
       `${reconKeyframes} keyframe(s)\n` +
+      `${cloudVoxels} voxels -> ${cloudPoints} pts\n` +
+      `${cloudScale}\n` +
       `${anchorMeshes.size} anchor(s)`;
   }
 }, 250);

@@ -223,6 +223,14 @@ export interface ReconFrameMsg {
   /** Camera world pose at the capture instant (ARCore `local` frame). */
   position: Vec3;
   quaternion: Quat;
+  /**
+   * Row-major 4x4 `worldFromCamera` in the **OpenCV camera convention**
+   * (+x right, +y down, +z forward) - the same convention `app/lifting.py`
+   * unprojects in. Fusion uses this; position/quaternion drive the viewer's
+   * breadcrumb markers. Sent explicitly rather than derived, because Babylon's
+   * camera basis is left-handed and +y-up, and that mismatch is a silent bug.
+   */
+  pose: number[];
   /** Horizontal FOV in degrees, from the XR projection matrix. */
   fovDeg: number;
   width: number;
@@ -248,6 +256,28 @@ export interface ReconKeyframeMsg {
   width: number;
   height: number;
   sharpness: number;
+  at: number;
+}
+
+/** Server -> viewer: a decimated point-cloud snapshot from the fusion map. */
+export interface ReconCloudMsg {
+  type: "recon_cloud";
+  sessionId: string;
+  /** Number of points in this snapshot. */
+  count: number;
+  /** base64 little-endian float32, xyz triples (metres, ARCore frame). */
+  positions: string;
+  /** base64 uint8, rgb triples. */
+  colors: string;
+  /** Voxel size the snapshot was decimated to. */
+  voxel: number;
+  scaleA: number;
+  scaleB: number;
+  scaleMethod: string;
+  scaleRms: number;
+  scaleSamples: number;
+  /** Total voxels in the map (not just the snapshot). */
+  voxels: number;
   at: number;
 }
 
@@ -337,6 +367,7 @@ export type ServerToClient =
   | ReconKeyframeMsg
   | ReconStatusMsg
   | ReconClearMsg
+  | ReconCloudMsg
   | SessionEventMsg
   | ErrorMsg;
 
