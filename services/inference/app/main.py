@@ -278,8 +278,10 @@ def _segment_response(
     depth = None
     if depth_est is not None:
         t0 = time.perf_counter()
-        # True depth, not the model's raw disparity (see DepthEstimator).
+        # True depth, not the model's raw disparity (see DepthEstimator), and
+        # median-blur it to knock down speckle before unprojecting.
         depth = depth_est.predict_depth(pil)
+        depth = cv2.medianBlur(depth, 5)
         timing["depth"] = round((time.perf_counter() - t0) * 1000, 2)
 
     detections = [

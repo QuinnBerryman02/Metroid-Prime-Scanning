@@ -26,11 +26,31 @@ def intrinsics_from_fov(
     return f, f, width / 2.0, height / 2.0
 
 
+def _robust_band(values: np.ndarray, k: float = 2.5) -> tuple[float, float]:
+    """Median +/- k*MAD - a robust depth range that ignores far/near outliers."""
+    med = float(np.median(values))
+    mad = float(np.median(np.abs(values - med))) + 1e-6
+    return med - k * mad, med + k * mad
+
+
+def _smooth_circular(values: list[float], window: int = 5) -> list[float]:
+    """Moving average around a closed polyline (kills the per-point jitter)."""
+    n = len(values)
+    if n < 3 or window < 3:
+        return values
+    half = window // 2
+    return [
+        sum(values[(i + j) % n] for j in range(-half, half + 1)) / window
+        for i in range(n)
+    ]
+
+
 def unproject_mask(
     mask: np.ndarray,
     depth: np.ndarray,
     intr: tuple[float, float, float, float],
     stride: int = 4,
+    robust: bool = True,
 ) -> np.ndarray:
     """Return an Nx3 array of camera-space points for the masked pixels."""
     fx, fy, cx, cy = intr
@@ -40,6 +60,9 @@ def unproject_mask(
     if len(xs) == 0:
         return np.empty((0, 3), dtype=np.float64)
     z = depth[ys, xs].astype(np.float64)
+    if robust and z.size:
+        lo, hi = _robust_band(z)
+        z = np.clip(z, lo, hi)
     x = (xs - cx) * z / fx
     y = (ys - cy) * z / fy
     return np.stack([x, y, z], axis=1)
@@ -141,16 +164,26 @@ def contour_from_mask(
 
     fx, fy, cx, cy = intr
     h, w = mask.shape
-    # Fall back to the object's median depth where the boundary depth is bad.
-    med = float(np.median(depth[mask])) if mask.any() else 0.0
-    contour_cam: list[list[float]] = []
+    # Boundary pixels sit on the silhouette and mix object + background, so the
+    # raw depth there is very noisy. Clip to the object's robust range, fall
+    # back to the median where it is dodgy, then smooth along the outline.
+    obj = depth[mask] if mask.any() else np.array([1.0], dtype=np.float32)
+    med = float(np.median(obj))
+    lo, hi = _robust_band(obj)
+
+    zs: list[float] = []
     for u, v in pts:
         ui = int(np.clip(u, 0, w - 1))
         vi = int(np.clip(v, 0, h - 1))
         z = float(depth[vi, ui])
         if not np.isfinite(z) or z <= 0:
             z = med
-        contour_cam.append([(u - cx) * z / fx, (v - cy) * z / fy, z])
+        zs.append(float(np.clip(z, lo, hi)))
+    zs = _smooth_circular(zs, 5)
+
+    contour_cam = [
+        [(u - cx) * z / fx, (v - cy) * z / fy, z] for (u, v), z in zip(pts, zs)
+    ]
     return pts, contour_cam
 
 
