@@ -127,6 +127,8 @@ class ReconFrameRequest(BaseModel):
     image: str = ""
     reason: str = ""
     sharpness: float = 0.0
+    # Metric distance from the reticle to the ARCore hit-test surface, if any.
+    hitDistance: float | None = None
     # Current metric ARCore planes, attached by the gateway (for the scale fit).
     planes: list[dict] = Field(default_factory=list)
 
@@ -171,3 +173,11 @@ class ReconFrameResponse(BaseModel):
     # Why this frame was not fused, if it was not. Surfaced to the viewer so
     # "no points" is never silent.
     reason: str | None = None
+    # The scale actually used, so the viewer can show it on every frame (not
+    # only on the frames that happen to carry a cloud snapshot).
+    scaleA: float | None = None
+    scaleB: float | None = None
+    scaleMethod: str | None = None
+    # Independent estimate from the ARCore hit-test: hitDistance / rel@reticle.
+    # If this disagrees with scaleA, the plane fit is the suspect.
+    scaleHit: float | None = None

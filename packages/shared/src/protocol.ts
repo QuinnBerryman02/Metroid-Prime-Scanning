@@ -241,6 +241,13 @@ export interface ReconFrameMsg {
   reason: "first" | "move" | "rotate" | "both" | "manual";
   /** Laplacian variance of the greyscale frame (higher = sharper). */
   sharpness: number;
+  /**
+   * Metric distance from the reticle to the ARCore hit-test surface, if any.
+   * An independent scale reference: the server can compare `rel_depth` at the
+   * reticle against a known metric depth and see whether the plane-based fit
+   * agrees. Optional - a hit is not guaranteed.
+   */
+  hitDistance?: number | null;
 }
 
 /** Server -> viewer: a keyframe was accepted (metadata only - no pixels). */

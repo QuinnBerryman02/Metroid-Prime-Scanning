@@ -128,11 +128,27 @@ async function forwardReconFrame(msg: ReconFrameMsg) {
       skipped?: number;
       reason?: string | null;
       timing?: Record<string, number>;
+      scaleA?: number | null;
+      scaleB?: number | null;
+      scaleMethod?: string | null;
+      scaleHit?: number | null;
     };
 
-    const scale = data.cloud
-      ? `${data.cloud.scaleMethod} a=${data.cloud.scaleA.toFixed(3)} b=${data.cloud.scaleB.toFixed(3)}`
-      : undefined;
+    // Show the plane-fit scale and the independent hit-test estimate side by
+    // side: if they disagree, the plane fit is the problem.
+    const parts: string[] = [];
+    if (typeof data.scaleA === "number") {
+      parts.push(
+        `${data.scaleMethod ?? "scale"} a=${data.scaleA.toFixed(3)} b=${(data.scaleB ?? 0).toFixed(3)}`,
+      );
+    }
+    if (typeof data.scaleHit === "number") {
+      parts.push(`hit a=${data.scaleHit.toFixed(3)}`);
+      if (typeof data.scaleA === "number" && data.scaleA > 0) {
+        parts.push(`${(data.scaleHit / data.scaleA).toFixed(2)}x`);
+      }
+    }
+    const scale = parts.length ? parts.join(" \u00b7 ") : undefined;
     setReconStats(msg.sessionId, {
       fused: data.fused,
       skipped: data.skipped,

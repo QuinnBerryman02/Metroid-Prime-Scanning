@@ -269,7 +269,12 @@ def _recon_entry(rs: dict[str, Any], session_id: str) -> dict[str, Any]:
     return entry
 
 
-def _skip(rs: dict[str, Any], entry: dict[str, Any], why: str) -> ReconFrameResponse:
+def _skip(
+    rs: dict[str, Any],
+    entry: dict[str, Any],
+    why: str,
+    hit_scale: float | None = None,
+) -> ReconFrameResponse:
     entry["skipped"] += 1
     log.info("recon skipped (%s)", why)
     return ReconFrameResponse(
@@ -278,6 +283,7 @@ def _skip(rs: dict[str, Any], entry: dict[str, Any], why: str) -> ReconFrameResp
         skipped=entry["skipped"],
         voxels=entry["voxels"].size,
         reason=why,
+        scaleHit=hit_scale,
     )
 
 
@@ -328,13 +334,33 @@ def _fuse_keyframe(
     diag: dict[str, Any] = {}
     fresh = fit_metric_scale(req.planes, world_from_cam, intr, rel, diag)
     why = _scale_why(req.planes, diag)
+
+    # Independent cross-check: ARCore's hit-test gives a metric depth at the
+    # reticle, which projects to roughly the image centre. The scan path has
+    # always used this and its outlines landed correctly, so if the plane fit
+    # and this disagree, the plane fit is the suspect.
+    hit_scale: float | None = None
+    if req.hitDistance and req.hitDistance > 0:
+        rel_centre = float(rel[height // 2, width // 2])
+        if rel_centre > 1e-6:
+            hit_scale = req.hitDistance / rel_centre
+
     fit = entry["tracker"].update(fresh)
     timing["scale"] = round((time.perf_counter() - t) * 1000, 2)
     if fit is None:
-        return _skip(rs, entry, why)
+        return _skip(rs, entry, why, hit_scale)
     # Fusing on the tracked scale is fine occasionally, but if this happens on
     # every frame the map is being built on a scale nothing is validating.
     scale_note = None if fresh is not None else f"scale held a={fit.a:.2f} - {why}"
+    if hit_scale is not None and fit.a > 0:
+        ratio = hit_scale / fit.a
+        if not 0.7 < ratio < 1.4:
+            log.warning(
+                "recon scale disagreement: planes a=%.3f vs hit-test a=%.3f (%.2fx)",
+                fit.a,
+                hit_scale,
+                ratio,
+            )
 
     # 3. MS3.2 - unproject and fuse into the world voxel map
     t = time.perf_counter()
@@ -393,6 +419,10 @@ def _fuse_keyframe(
         cloud=cloud,
         timing=timing,
         reason=scale_note,
+        scaleA=fit.a,
+        scaleB=fit.b,
+        scaleMethod=fit.method,
+        scaleHit=hit_scale,
     )
 
 

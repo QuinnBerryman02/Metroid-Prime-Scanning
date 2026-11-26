@@ -482,6 +482,7 @@ async function captureKeyframe(manual = false) {
       image: frame.base64,
       reason,
       sharpness: frame.sharpness,
+      hitDistance: currentHit ? Vector3.Distance(currentHit.position, pos) : null,
     });
     log(
       `keyframe #${kfCount} (${reason}) ${frame.width}x${frame.height} ` +
