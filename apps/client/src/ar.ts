@@ -99,8 +99,16 @@ function planeCenterNormal(poly: Vector3[]): { center: Vector3; normal: Vector3 
 }
 
 function sendPlane(action: "added" | "updated" | "removed", plane: IWebXRPlane) {
-  const poly = plane.polygonDefinition;
-  if (!poly || poly.length < 3) return;
+  const local = plane.polygonDefinition;
+  if (!local || local.length < 3) return;
+  // `polygonDefinition` is in the plane's LOCAL space; the plane's world pose
+  // lives in `transformationMatrix` (= planeSpace -> referenceSpace). Applying
+  // it is mandatory: without it every plane collapses to its own local frame
+  // (which is why walls were appearing flat on the floor).
+  const mat = plane.transformationMatrix;
+  const poly = mat
+    ? local.map((p) => Vector3.TransformCoordinates(p, mat))
+    : local;
   const now = performance.now();
   if (action === "updated" && now - (planeSentAt.get(plane.id) ?? 0) < PLANE_UPDATE_MS) {
     return;
@@ -122,7 +130,10 @@ function sendPlane(action: "added" | "updated" | "removed", plane: IWebXRPlane) 
     normal: [normal.x, normal.y, normal.z],
   });
   if (action !== "updated") {
-    log(`plane ${action} #${plane.id} ${orientation} (${poly.length}pts)`);
+    log(
+      `plane ${action} #${plane.id} ${orientation} (${poly.length}pts) ` +
+        `c=[${center.x.toFixed(2)}, ${center.y.toFixed(2)}, ${center.z.toFixed(2)}]`,
+    );
   }
 }
 
