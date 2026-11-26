@@ -198,6 +198,52 @@ not axis-aligned** - which, in an attic, is most of the interesting geometry.
 Note the asymmetry: 1-3 are *smooth* errors (they warp the map), while 4 is a
 *gap*. Warps are visually forgivable in an AR overlay; gaps read as holes.
 
+### Cost (measured)
+
+`scripts/bench_voxel.py` integrates a synthetic room (6 surfaces, one real
+diagonal roof), 150 k points/frame, 90 frames, 3 cm per-frame depth noise:
+
+| voxel | ms / frame | % of one core @3 Hz | voxels | arrays | obs / voxel |
+|---|---|---|---|---|---|
+| 2 cm | ~180 | ~54% | 1.64 M | 59 MB | 8.3 |
+| 5 cm | ~55 | ~17% | 148 k | 5.3 MB | 91 |
+| 10 cm | ~36 | ~11% | 25 k | 0.9 MB | 535 |
+
+**No GPU is needed.** `integrate()` is pure vectorised numpy - `np.unique` to
+bucket points into voxels, `np.bincount` for the per-voxel position/colour sums,
+then `np.searchsorted` + `np.insert` to merge into the sorted global key array.
+The iGPU is already busy with the depth model, and the CPU has headroom: at 3 Hz
+even the 2 cm case is about half of one core.
+
+Note the *shape* of the trade: finer voxels cost super-linearly, because a
+surface's voxel footprint grows as `1/voxel²` while the noisy observations spread
+it *thicker*. So 2 cm is the fidelity target, and 5 cm is the pragmatic fallback
+if the budget tightens (still fine for segmentation).
+
+Caveat: the benchmark's point-to-truth residual is a crude proxy and came out
+non-monotonic (2 cm 3.5 cm, 5 cm 5.6 cm, 10 cm 2.7 cm) because larger voxels
+straddle more surface *edges*, where a voxel mean legitimately sits inside the
+corner. Trust the timing / memory / obs-per-voxel columns, not that one.
+
+### Why TSDF is the real target (not just the accumulator)
+
+The measurement above shows the naive accumulator **does** average (8 obs/voxel
+at 2 cm). The problem is what it averages *to*: at 2 cm it produced **1.6 M
+voxels for a room with roughly 160 k of true surface** - a ~10x-thick shell.
+Averaging shrinks the noise but never collapses the shell, because a voxel is
+filled by points that legitimately belong to the surface on either side.
+
+TSDF fixes that structurally: every depth measurement votes a *truncated signed
+distance* over a band of voxels along its ray, and the surface is recovered as
+the **zero crossing** of the weighted average. So:
+
+- resolution and averaging decouple (no need for voxel > noise),
+- the output is a **surface**, not a thick point shell,
+- `extract_triangle_mesh()` gives an actual mesh for the viewer.
+
+Cost is comparable (single pass, C++ in Open3D), and the inputs are identical to
+the accumulator - so it is a drop-in swap once the loop works end-to-end.
+
 **Upgrade: TSDF** via `open3d.pipelines.integration.ScalableTSDFVolume`:
 
 ```python
