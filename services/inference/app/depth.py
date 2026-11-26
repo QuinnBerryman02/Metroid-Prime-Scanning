@@ -110,7 +110,11 @@ class DepthEstimator:
         return np.ascontiguousarray(img.transpose(2, 0, 1)[None])
 
     def predict(self, image: Image.Image) -> np.ndarray:
-        """Return a float32 HxW depth map (relative units; larger = farther)."""
+        """Raw model output as float32 HxW.
+
+        NOTE: Depth Anything V2 predicts *inverse* depth (disparity), so here
+        **larger = nearer**. Use `predict_depth()` when you need depth.
+        """
         pixel_values = self._preprocess(image)
         if self._compiled is not None:
             depth = np.asarray(
@@ -126,3 +130,11 @@ class DepthEstimator:
                 depth, (image.width, image.height), interpolation=cv2.INTER_LINEAR
             )
         return depth
+
+    def predict_depth(self, image: Image.Image) -> np.ndarray:
+        """True depth (larger = farther), i.e. `1 / disparity`.
+
+        Unprojecting the raw disparity would invert the object inside-out, so
+        the lifting stage always goes through this.
+        """
+        return 1.0 / np.maximum(self.predict(image), 1e-6)

@@ -57,6 +57,11 @@ P_world = world_from_camera · P_cam
 
 The mask is only used to pick *which* pixels. Everything downstream is 3D.
 
+> **Depth Anything V2 outputs inverse depth (disparity, larger = nearer).**
+> The service must use `d = 1 / disparity` before this step
+> (`DepthEstimator.predict_depth`). Using the raw output as depth inverts the
+> object inside-out and puts it at the wrong distance.
+
 ## 3. What do we actually anchor?
 
 The raw point cloud is heavy and noisy. We reduce it to something compact and
