@@ -146,17 +146,22 @@ class Segmenter:
 
 
 def masks_from_result(result, hw: tuple[int, int]) -> list[np.ndarray]:
-    """Pull boolean HxW masks out of an Ultralytics segmentation result."""
+    """Boolean HxW masks from an Ultralytics result, in ORIGINAL image pixels.
+
+    We rasterise `masks.xy` (always original-pixel polygons) rather than resize
+    `masks.data`, whose spatial size differs by backend: PyTorch returns the
+    unpadded letterbox size, OpenVINO returns the padded square. Stretching the
+    padded square back to the frame is what squished the YOLO/FastSAM masks.
+    """
     if result.masks is None:
         return []
-    data = result.masks.data.detach().cpu().numpy()
-    if data.ndim == 2:
-        data = data[None]
     out = []
-    for m in data:
-        if m.shape != hw:
-            m = cv2.resize(m, (hw[1], hw[0]), interpolation=cv2.INTER_LINEAR)
-        out.append(m > 0.5)
+    for poly in result.masks.xy:
+        mask = np.zeros(hw, dtype=np.uint8)
+        pts = np.asarray(poly, dtype=np.float32)
+        if len(pts) >= 3:
+            cv2.fillPoly(mask, [np.round(pts).astype(np.int32)], 1)
+        out.append(mask.astype(bool))
     return out
 
 

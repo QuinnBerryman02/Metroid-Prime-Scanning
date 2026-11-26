@@ -320,6 +320,10 @@ function setBusy(value: boolean) {
 const ms = (v?: number) => (v == null ? "-" : `${v.toFixed(0)}ms`);
 
 async function init() {
+  // Kill the browser's long-press menu ("copy video frame") so a hold only
+  // opens our wheel.
+  window.addEventListener("contextmenu", (e) => e.preventDefault());
+
   await loadMethods();
   await startCamera();
 

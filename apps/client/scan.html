@@ -33,6 +33,8 @@
         height: 100%;
         object-fit: contain;
         background: #000;
+        -webkit-user-drag: none;
+        pointer-events: none;
       }
       #overlay {
         position: fixed;
@@ -241,7 +243,14 @@
     </style>
   </head>
   <body>
-    <video id="video" playsinline muted autoplay></video>
+    <video
+      id="video"
+      playsinline
+      muted
+      autoplay
+      disablepictureinpicture
+      controlslist="nodownload noplaybackrate"
+    ></video>
     <canvas id="overlay"></canvas>
     <img id="depthImg" alt="depth map" />
     <div id="reticle"><span class="ring"></span></div>
