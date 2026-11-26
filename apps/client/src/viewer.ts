@@ -13,6 +13,11 @@ import { Vector3, Quaternion } from "@babylonjs/core/Maths/math.vector";
 import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
+// Side effect only: this module is what adds thinInstance* to Mesh.prototype.
+// Babylon's ES6 build patches prototypes when a feature module is imported, so
+// without it the method is genuinely absent at runtime - not merely untyped,
+// and the failure is a TypeError rather than a compile error.
+import "@babylonjs/core/Meshes/thinInstanceMesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
@@ -403,9 +408,18 @@ function renderCloud(msg: ReconCloudMsg) {
   }
 
   cloudMesh?.dispose();
-  cloudMesh = solidCloud
-    ? buildVoxelBlocks(positions, colors, msg)
-    : buildPointCloud(positions, colors);
+  try {
+    cloudMesh = solidCloud
+      ? buildVoxelBlocks(positions, colors, msg)
+      : buildPointCloud(positions, colors);
+  } catch (e) {
+    // A rendering failure must not cost the whole cloud. Losing the solid view
+    // is a cosmetic problem; losing every cloud is not, and that is what
+    // happened when thinInstanceSetBuffer turned out to be missing.
+    log(`solid view failed (${String(e)}) - showing points instead`);
+    solidCloud = false;
+    cloudMesh = buildPointCloud(positions, colors);
+  }
   cloudPoints = msg.count;
   cloudVoxels = msg.voxels;
   cloudScale =
