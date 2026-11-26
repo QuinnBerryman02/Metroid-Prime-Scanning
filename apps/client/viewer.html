@@ -17,9 +17,19 @@
         text-decoration: none; padding: 8px 12px; border: 1px solid #1e3a44;
         border-radius: 8px; background: rgba(4,12,15,.78); }
       #replay { position: fixed; left: 12px; bottom: 12px; display: flex;
-        gap: 8px; align-items: center; padding: 8px 10px;
-        background: rgba(4,12,15,.82); border: 1px solid #1e3a44;
+        flex-direction: column; gap: 6px; padding: 8px 10px;
+        max-height: 74vh; overflow-y: auto;
+        background: rgba(4,12,15,.86); border: 1px solid #1e3a44;
         border-radius: 10px; }
+      #replay .row { display: flex; gap: 8px; align-items: center; }
+      #params { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px;
+        align-items: center; border-top: 1px solid #1e3a44; padding-top: 7px; }
+      #params label { color: #b9cdd3; white-space: nowrap; }
+      #params input[type="number"] { width: 8ch; }
+      #params input, #params select { font: inherit; padding: 3px 6px;
+        border-radius: 6px; border: 1px solid #2b4149; background: #0d1c22;
+        color: #eaf6f3; }
+      .phelp { grid-column: 2; color: #6f868e; margin: -2px 0 4px; }
       #replay select, #replay button { font: inherit; padding: 6px 10px;
         border-radius: 7px; border: 1px solid #2b4149; background: #12242b;
         color: #eaf6f3; max-width: 42ch; }
@@ -32,10 +42,19 @@
     <div id="status">connecting…</div>
     <a id="back" href="/">&larr; home</a>
     <div id="replay">
-      <span id="replayHint">recorded runs:</span>
-      <select id="logSelect"></select>
-      <button id="replayBtn">Replay</button>
-      <button id="stopBtn">Stop</button>
+      <div class="row">
+        <span id="replayHint">recorded runs:</span>
+        <select id="logSelect"></select>
+        <button id="replayBtn">Replay</button>
+        <button id="stopBtn">Stop</button>
+      </div>
+      <div class="row">
+        <span>method:</span>
+        <select id="methodSelect"></select>
+        <button id="resetParams">defaults</button>
+      </div>
+      <div id="methodDesc"></div>
+      <div id="params"></div>
     </div>
     <script type="module" src="/src/viewer.ts"></script>
   </body>

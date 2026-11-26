@@ -131,6 +131,10 @@ class ReconFrameRequest(BaseModel):
     hitDistance: float | None = None
     # False when this frame is being replayed from a recording.
     record: bool = True
+    # Which reconstruction method to use and its knobs (see GET /recon/methods).
+    # Switching method rebuilds this session's map, so the two never mix.
+    method: str = "voxel"
+    params: dict = Field(default_factory=dict)
     # Current metric ARCore planes, attached by the gateway (for the scale fit).
     planes: list[dict] = Field(default_factory=list)
 
@@ -142,6 +146,8 @@ class ReconCloud(BaseModel):
     positions: str  # base64 little-endian float32, xyz triples
     colors: str  # base64 uint8, rgb triples
     voxel: float = 0.0
+    method: str = ""
+    note: str = ""
     scaleA: float = 0.0
     scaleB: float = 0.0
     scaleMethod: str = ""
@@ -172,6 +178,9 @@ class ReconFrameResponse(BaseModel):
     voxels: int = 0
     cloud: ReconCloud | None = None
     timing: dict[str, float] = Field(default_factory=dict)
+    # Which reconstruction method produced this frame's map.
+    method: str = ""
+    note: str = ""
     # Why this frame was not fused, if it was not. Surfaced to the viewer so
     # "no points" is never silent.
     reason: str | None = None

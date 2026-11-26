@@ -35,6 +35,7 @@ from fastapi import FastAPI, HTTPException
 from PIL import Image
 
 from . import config
+from . import recon_methods as recon
 from .depth import DepthEstimator
 from .detector import Detector
 from .lifting import (
@@ -49,7 +50,6 @@ from .fusion import (
     AFFINE_MIN_SPREAD,
     ScaleFit,
     ScaleTracker,
-    VoxelMap,
     encode_points,
     fit_metric_scale,
     pose_to_matrix,
@@ -278,15 +278,31 @@ def _record_keyframe(req: ReconFrameRequest, raw: bytes) -> None:
         log.warning("recon record failed: %s", e)
 
 
-def _recon_entry(rs: dict[str, Any], session_id: str) -> dict[str, Any]:
-    """Per-session voxel map + scale tracker. Small LRU across sessions."""
+def _recon_entry(
+    rs: dict[str, Any], session_id: str, method_id: str = "voxel"
+) -> dict[str, Any]:
+    """Per-session reconstruction method + scale tracker. Small LRU.
+
+    The map belongs to the session, and so does the scale tracker; switching
+    method rebuilds the map, because half a voxel map fused with one method and
+    half with another is not a reconstruction of anything.
+    """
     maps: dict[str, Any] = rs["maps"]
     entry = maps.get(session_id)
+    if entry is not None and entry["method_id"] != method_id:
+        log.info(
+            "recon %s switching method %s -> %s (map reset)",
+            session_id,
+            entry["method_id"],
+            method_id,
+        )
+        entry = None
     if entry is None:
         while len(maps) >= 4:
             maps.pop(next(iter(maps)))
         entry = {
-            "voxels": VoxelMap(config.RECON_VOXEL, config.RECON_CAPACITY),
+            "method_id": method_id,
+            "method": recon.build(method_id, recon.default_params(method_id)),
             "tracker": ScaleTracker(),
             "fused": 0,
             "skipped": 0,
@@ -307,21 +323,33 @@ def _skip(
         keyframes=rs["keyframes"],
         fused=entry["fused"],
         skipped=entry["skipped"],
-        voxels=entry["voxels"].size,
+        voxels=entry["method"].size,
         reason=why,
         scaleHit=hit_scale,
+        method=entry["method_id"],
+        note=entry["method"].note(),
     )
 
 
 def _fuse_keyframe(
     req: ReconFrameRequest, rs: dict[str, Any], entry: dict[str, Any]
 ) -> ReconFrameResponse:
-    """Depth -> metric scale -> unproject -> fuse. MS3.1 + MS3.2."""
+    """Depth -> metric scale -> unproject -> fuse. MS3.1 + MS3.2.
+
+    The *method* decides what is kept; everything up to the point cloud (depth,
+    scale, intrinsics, unprojection) is shared, so the methods are comparable.
+    """
     depth = state.get("depth")
     if depth is None:
         return _skip(rs, entry, "depth model unavailable")
     if not req.image or len(req.pose) != 16:
         return _skip(rs, entry, "missing image/pose")
+
+    # One params dict drives the shared stages; clamp it - these values size
+    # allocations, so an out-of-range stride or voxel is a DoS, not a typo.
+    params = recon.coerce_params(entry["method_id"], req.params)
+    method: recon.BaseRecon = entry["method"]
+    method.p = params
 
     t0 = time.perf_counter()
     try:
@@ -348,11 +376,21 @@ def _fuse_keyframe(
     # 1. relative depth (inverse of the model's disparity), metric scale unknown
     t = time.perf_counter()
     rel = depth.predict_depth(pil)
-    rel = cv2.medianBlur(rel, 5)
+    if params["depthFilter"] == "median":
+        rel = cv2.medianBlur(rel, 5)
+    elif params["depthFilter"] == "bilateral":
+        # Edge-preserving: smooths flat surfaces without smearing across the
+        # boundary between a near object and the wall behind it.
+        rel = cv2.bilateralFilter(
+            rel.astype(np.float32), 5, 0.08 * abs(rel).max(), 6.0
+        )
     timing["depth"] = round((time.perf_counter() - t) * 1000, 2)
 
     world_from_cam = pose_to_matrix(req.pose)
-    intr = intrinsics_from_fov(width, height, req.fovDeg or config.FOV_DEG)
+    # fovDeg=0 means "whatever the phone reported"; a real value overrides it,
+    # which is how the intrinsics hypothesis gets tested against real frames.
+    fov = params["fovDeg"] or req.fovDeg or config.FOV_DEG
+    intr = intrinsics_from_fov(width, height, fov)
 
     # 2. MS3.1 - metric scale, from ARCore's planes. The tracker smooths the
     # per-frame estimate: fusing with a scale that jumps frame to frame smears
@@ -403,7 +441,24 @@ def _fuse_keyframe(
             fresh = ScaleFit(hit_scale, 0.0, 0, 0.0, "hit")
             source = "hit-test"
 
-    fit = entry["tracker"].update(fresh)
+    # The method may pin the scale source. "fixed"/"none" bypass the tracker:
+    # they are exact by construction, so smoothing them would be wrong.
+    scale_mode = params["scaleMode"]
+    exact = False
+    if scale_mode == "hit":
+        if hit_scale is None:
+            return _skip(rs, entry, f"scaleMode=hit, no hit-test ({why})", hit_scale)
+        fresh = ScaleFit(hit_scale, 0.0, 0, 0.0, "hit")
+        source = "hit-test"
+    elif scale_mode == "fixed":
+        fresh = ScaleFit(params["scaleA"], params["scaleB"], 0, 0.0, "fixed")
+        source, exact = "fixed", True
+    elif scale_mode == "none":
+        fresh = ScaleFit(1.0, 0.0, 0, 0.0, "none")
+        source, exact = "none", True
+    # "auto" and "planes" fall through with whatever the fit cross-check left.
+
+    fit = fresh if exact else entry["tracker"].update(fresh)
     timing["scale"] = round((time.perf_counter() - t) * 1000, 2)
     if fit is None:
         return _skip(rs, entry, why, hit_scale)
@@ -418,23 +473,27 @@ def _fuse_keyframe(
         world_from_cam,
         intr,
         fit,
-        stride=config.RECON_STRIDE,
-        min_depth=config.RECON_MIN_DEPTH,
-        max_depth=config.RECON_MAX_DEPTH,
+        stride=params["stride"],
+        min_depth=params["minDepth"],
+        max_depth=params["maxDepth"],
     )
     if points.shape[0]:
-        entry["voxels"].integrate(points, img[ys, xs].astype(np.float64))
+        method.add(
+            points,
+            img[ys, xs].astype(np.float64),
+            world_from_cam[:3, 3].astype(np.float64),
+            [],
+        )
     timing["fuse"] = round((time.perf_counter() - t) * 1000, 2)
     timing["total"] = round((time.perf_counter() - t0) * 1000, 2)
 
     entry["fused"] += 1
-    voxels: VoxelMap = entry["voxels"]
     log.info(
         "recon %s fused %d pts -> %d voxels | scale %s a=%.3f b=%.3f rms=%.3f "
         "src=%s (%d planes, %d tracked) %.0f ms",
         req.frameId,
         points.shape[0],
-        voxels.size,
+        method.size,
         fit.method,
         fit.a,
         fit.b,
@@ -447,13 +506,15 @@ def _fuse_keyframe(
 
     cloud = None
     if entry["fused"] % config.RECON_CLOUD_EVERY == 0 or entry["fused"] == 1:
-        pos, col, used = voxels.snapshot(config.RECON_CLOUD_VOXEL, config.RECON_CLOUD_MAX)
+        pos, col, used = method.cloud(config.RECON_CLOUD_MAX)
         p_b64, c_b64 = encode_points(pos, col)
         cloud = ReconCloud(
             count=int(pos.shape[0]),
             positions=p_b64,
             colors=c_b64,
             voxel=used,
+            method=entry["method_id"],
+            note=method.note(),
             scaleA=fit.a,
             scaleB=fit.b,
             scaleMethod=fit.method,
@@ -465,9 +526,11 @@ def _fuse_keyframe(
         keyframes=rs["keyframes"],
         fused=entry["fused"],
         skipped=entry["skipped"],
-        voxels=voxels.size,
+        voxels=method.size,
         cloud=cloud,
         timing=timing,
+        method=entry["method_id"],
+        note=method.note(),
         reason=scale_note,
         scaleA=fit.a,
         scaleB=fit.b,
@@ -483,7 +546,7 @@ def recon_frame(req: ReconFrameRequest) -> ReconFrameResponse:
     rs["keyframes"] += 1
     sessions: dict[str, int] = rs["sessions"]
     sessions[req.sessionId] = sessions.get(req.sessionId, 0) + 1
-    entry = _recon_entry(rs, req.sessionId)
+    entry = _recon_entry(rs, req.sessionId, recon.resolve(req.method))
 
     if not _recon_lock.acquire(blocking=False):
         return _skip(rs, entry, "busy (previous frame still fusing)")
@@ -491,6 +554,16 @@ def recon_frame(req: ReconFrameRequest) -> ReconFrameResponse:
         return _fuse_keyframe(req, rs, entry)
     finally:
         _recon_lock.release()
+
+
+@app.get("/recon/methods")
+def recon_methods_list() -> dict[str, Any]:
+    """The reconstruction methods and their tunable params.
+
+    The viewer builds its controls straight from this, so it stays in step with
+    app/recon_methods.py without any duplicated knowledge.
+    """
+    return {"default": "voxel", "methods": recon.list_methods()}
 
 
 @app.get("/recon/status", response_model=ReconStatusResponse)
@@ -508,7 +581,7 @@ def recon_status() -> ReconStatusResponse:
         lastFrameId=last.get("frameId"),
         lastJpegBytes=last.get("jpegBytes", 0),
         lastMs=last.get("at"),
-        voxels=entry["voxels"].size if entry else 0,
+        voxels=entry["method"].size if entry else 0,
         scaleA=fit.a if fit else None,
         scaleB=fit.b if fit else None,
         scaleMethod=fit.method if fit else None,

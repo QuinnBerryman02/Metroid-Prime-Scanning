@@ -249,6 +249,18 @@ function handleReconFrame(msg: ReconFrameMsg) {
   void forwardReconFrame(msg);
 }
 
+/** The reconstruction methods + their params, so the viewer can build controls. */
+app.get("/recon/methods", async (_req, reply) => {
+  try {
+    const res = await fetch(`${INFERENCE_URL}/recon/methods`);
+    if (!res.ok) throw new Error(`inference ${res.status}`);
+    return await res.json();
+  } catch (e) {
+    reply.code(502);
+    return { error: `inference unreachable: ${String(e)}`, methods: [] };
+  }
+});
+
 // --- offline replay ---------------------------------------------------------
 // Replays a recorded run through the *live* pipeline, so the viewer sees it
 // exactly as if a phone were walking the room: keyframes, planes, the fused
@@ -277,7 +289,12 @@ app.get("/recon/logs", async () => {
   }
 });
 
-async function startReplay(session: string, intervalMs: number) {
+async function startReplay(
+  session: string,
+  intervalMs: number,
+  method: string,
+  params: Record<string, number | string | boolean>,
+) {
   stopReplay?.();
   let stopped = false;
   stopReplay = () => {
@@ -294,7 +311,10 @@ async function startReplay(session: string, intervalMs: number) {
   reconStats.delete(replayId);
   planes.delete(replayId);
   broadcast({ type: "recon_clear", sessionId: replayId } satisfies ReconClearMsg, "viewer");
-  app.log.info({ session, frames: files.length, intervalMs }, "replay starting");
+  app.log.info(
+    { session, frames: files.length, intervalMs, method },
+    "replay starting",
+  );
 
   void (async () => {
     for (const file of files) {
@@ -327,6 +347,8 @@ async function startReplay(session: string, intervalMs: number) {
           sharpness: meta.sharpness ?? 0,
           hitDistance: meta.hitDistance ?? null,
           record: false, // never re-record a replay
+          method,
+          params,
         };
         broadcast(
           {
@@ -350,7 +372,14 @@ async function startReplay(session: string, intervalMs: number) {
 }
 
 app.post("/recon/replay", async (req, reply) => {
-  const body = req.body as { session?: string; intervalMs?: number } | undefined;
+  const body = req.body as
+    | {
+        session?: string;
+        intervalMs?: number;
+        method?: string;
+        params?: Record<string, number | string | boolean>;
+      }
+    | undefined;
   const session = body?.session;
   if (!session) {
     reply.code(400);
@@ -361,12 +390,17 @@ app.post("/recon/replay", async (req, reply) => {
     return { error: "bad session name" };
   }
   try {
-    await startReplay(session, body?.intervalMs ?? REPLAY_INTERVAL_MS);
+    await startReplay(
+      session,
+      body?.intervalMs ?? REPLAY_INTERVAL_MS,
+      body?.method ?? "voxel",
+      body?.params ?? {},
+    );
   } catch (e) {
     reply.code(404);
     return { error: `cannot replay ${session}: ${String(e)}` };
   }
-  return { ok: true, session };
+  return { ok: true, session, method: body?.method ?? "voxel" };
 });
 
 app.post("/recon/replay/stop", async () => {

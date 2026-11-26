@@ -246,6 +246,10 @@ export interface ReconFrameMsg {
    * does not duplicate the log it is reading from.
    */
   record?: boolean;
+  /** Which reconstruction method to fuse with (see GET /recon/methods). */
+  method?: string;
+  /** That method's parameters; the server clamps them to their declared range. */
+  params?: Record<string, number | string | boolean>;
   /**
    * Metric distance from the reticle to the ARCore hit-test surface, if any.
    * An independent scale reference: the server can compare `rel_depth` at the
@@ -283,6 +287,10 @@ export interface ReconCloudMsg {
   colors: string;
   /** Voxel size the snapshot was decimated to. */
   voxel: number;
+  /** Which reconstruction method produced this snapshot. */
+  method?: string;
+  /** That method's own status text (truncation, dropped points, ...). */
+  note?: string;
   scaleA: number;
   scaleB: number;
   scaleMethod: string;

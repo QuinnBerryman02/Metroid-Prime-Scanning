@@ -266,6 +266,53 @@ There are two ways to consume it:
 > scripts - use a separate directory (e.g. `RECON_DIR=/tmp/recon_test`) if you
 > need a throwaway.
 
+### 8.1 What went wrong with the scale (measured, 2026-02)
+
+Recorded 26 keyframes of one bedroom. `scripts/analyse_scale.py` compares the
+model's depth at the reticle against ARCore's hit-test distance per frame;
+`scripts/replay_http.py --scale-mode fixed --scale-a X` re-fuses the whole run
+at a chosen scale.
+
+**The two ARCore metric references disagree with each other and with the truth.**
+Both are far too large:
+
+| source | scale `a` it implies |
+| --- | --- |
+| ARCore plane fit | 5.47 (rms 1-2 m - noise, not a fit) |
+| ARCore hit-test `hitDistance / rel@centre` | 3.67 |
+| **truth, from the y-origin test** | **0.7** |
+
+The hit-test ratio also drifts from 1.13 to 7.51 across the 24 frames that had a
+reading, i.e. a 174% spread around its median. **No single global scale can be
+the plane fit or the hit-test**: they are not measuring the same thing the depth
+model is, and a `ScaleTracker` running median over them only hides that.
+
+The working estimator needs no planes and no hit-test. ARCore's `local-floor`
+frame is metric and its origin is on the floor, and the recorded poses put the
+camera at y=1.44 m. So the fused cloud's **y-extent must run from 0 (floor) to
+the ceiling height**. Sweeping `a`:
+
+| `a` | fused y-range |
+| --- | --- |
+| 0.5 | 0.37 .. 1.97 (floats 37 cm above the floor) |
+| 0.6 | 0.18 .. 2.03 |
+| **0.7** | **-0.01 .. 2.10** |
+| 1.0 | -0.56 .. 2.33 (sinks below the floor) |
+| 3.678 | -5.53 .. 5.14 |
+
+`a = 0.7` lands the floor exactly on the origin and gives a 2.1 m ceiling. That
+is the default now, and `scaleMode`/`scaleA` are exposed per method so this can
+be dialled in the viewer instead of walked again.
+
+Caveat: Depth Anything V2's relative scale drifts per image, so 0.7 is fitted to
+*this* recording. It is a good starting point, not a universal constant - hence
+the controls.
+
+> **Do not trust ARCore's hit-test as a metric depth.** The scan path's
+> `s = hitDistance / depthAtCentre` has been wrong by the same factor all along;
+> its outlines looked plausible because an overlay that is 5x too far still lands
+> roughly on the object the user was aiming at.
+
 **A caution that cost us a wrong turn.** The obvious objective - score a scale by
 how compact the fused map is - is *degenerate*: shrinking the scale always packs
 points into fewer voxels, so it monotonically prefers small `a`. That is not a

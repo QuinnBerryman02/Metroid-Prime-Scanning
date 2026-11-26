@@ -364,7 +364,9 @@ function renderCloud(msg: ReconCloudMsg) {
   cloudMesh = mesh;
   cloudPoints = msg.count;
   cloudVoxels = msg.voxels;
-  cloudScale = `${msg.scaleMethod} a=${msg.scaleA.toFixed(3)} b=${msg.scaleB.toFixed(3)}`;
+  cloudScale =
+    `${msg.method ?? "?"}${msg.note ? ` (${msg.note})` : ""} · ` +
+    `${msg.scaleMethod} a=${msg.scaleA.toFixed(3)} b=${msg.scaleB.toFixed(3)}`;
 }
 
 const gateway = new GatewayClient("viewer", sessionId, {
@@ -482,6 +484,124 @@ const logSelect = document.getElementById("logSelect") as HTMLSelectElement;
 const replayBtn = document.getElementById("replayBtn") as HTMLButtonElement;
 const stopBtn = document.getElementById("stopBtn") as HTMLButtonElement;
 const replayHint = document.getElementById("replayHint")!;
+const methodSelect = document.getElementById("methodSelect") as HTMLSelectElement;
+const paramsBox = document.getElementById("params")!;
+const methodDesc = document.getElementById("methodDesc")!;
+const resetParams = document.getElementById("resetParams") as HTMLButtonElement;
+
+interface ParamSpec {
+  key: string;
+  label: string;
+  kind: "float" | "int" | "bool" | "enum";
+  default: number | string | boolean;
+  min: number | null;
+  max: number | null;
+  step: number | null;
+  choices: string[] | null;
+  help: string;
+}
+interface MethodSpec {
+  id: string;
+  label: string;
+  description: string;
+  params: ParamSpec[];
+}
+let methods: MethodSpec[] = [];
+
+function currentMethod(): MethodSpec | undefined {
+  return methods.find((m) => m.id === methodSelect.value);
+}
+
+/**
+ * Rebuild the parameter controls from the selected method's declaration. The
+ * server owns the schema (app/recon_methods.py), so nothing here needs to know
+ * what a parameter means - or to be edited when a new one is added.
+ */
+function renderParams() {
+  const m = currentMethod();
+  paramsBox.innerHTML = "";
+  methodDesc.textContent = m?.description ?? "";
+  if (!m) return;
+  for (const p of m.params) {
+    const label = document.createElement("label");
+    label.textContent = p.label;
+    paramsBox.appendChild(label);
+
+    let input: HTMLInputElement | HTMLSelectElement;
+    if (p.kind === "enum") {
+      input = document.createElement("select");
+      for (const c of p.choices ?? []) {
+        const o = document.createElement("option");
+        o.value = c;
+        o.textContent = c;
+        input.appendChild(o);
+      }
+      (input as HTMLSelectElement).value = String(p.default);
+    } else if (p.kind === "bool") {
+      input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = Boolean(p.default);
+    } else {
+      input = document.createElement("input");
+      input.type = "number";
+      input.value = String(p.default);
+      if (p.min !== null) input.min = String(p.min);
+      if (p.max !== null) input.max = String(p.max);
+      if (p.step !== null) input.step = String(p.step);
+    }
+    input.dataset.key = p.key;
+    input.title = p.help;
+    paramsBox.appendChild(input);
+
+    if (p.help) {
+      const h = document.createElement("div");
+      h.className = "phelp";
+      h.textContent = p.help;
+      paramsBox.appendChild(h);
+    }
+  }
+}
+
+/** Read the controls back out. The server clamps, so no validation here. */
+function collectParams(): Record<string, number | string | boolean> {
+  const out: Record<string, number | string | boolean> = {};
+  for (const el of paramsBox.querySelectorAll<HTMLElement>("[data-key]")) {
+    const key = el.dataset.key!;
+    if (el instanceof HTMLInputElement && el.type === "checkbox") {
+      out[key] = el.checked;
+    } else if (el instanceof HTMLSelectElement) {
+      out[key] = el.value;
+    } else {
+      const n = Number((el as HTMLInputElement).value);
+      if (Number.isFinite(n)) out[key] = n;
+    }
+  }
+  return out;
+}
+
+async function loadMethods() {
+  try {
+    const res = await fetch("/api/recon/methods");
+    const data = (await res.json()) as { methods?: MethodSpec[]; default?: string };
+    methods = data.methods ?? [];
+    methodSelect.innerHTML = "";
+    for (const m of methods) {
+      const o = document.createElement("option");
+      o.value = m.id;
+      o.textContent = m.label;
+      methodSelect.appendChild(o);
+    }
+    methodSelect.value = data.default ?? methods[0]?.id ?? "voxel";
+    renderParams();
+    log(`methods: ${methods.map((m) => m.id).join(", ")}`);
+  } catch (e) {
+    methodDesc.textContent = "could not load methods (inference up?)";
+    log(`methods fetch failed: ${String(e)}`);
+  }
+}
+
+methodSelect.addEventListener("change", renderParams);
+resetParams.addEventListener("click", renderParams);
 
 async function loadLogs() {
   try {
@@ -525,12 +645,19 @@ replayBtn.addEventListener("click", () => {
   const session = logSelect.value;
   if (!session) return;
   replayClear();
+  const method = methodSelect.value;
+  const params = collectParams();
+  paramsBox.style.opacity = "0.5";
   void fetch("/api/recon/replay", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ session }),
+    body: JSON.stringify({ session, method, params }),
   })
-    .then((r) => (r.ok ? log(`replaying ${session}`) : log(`replay failed ${r.status}`)))
+    .then((r) =>
+      r.ok
+        ? log(`replaying ${session} with ${method} ${JSON.stringify(params)}`)
+        : log(`replay failed ${r.status}`),
+    )
     .catch((e) => log(`replay failed: ${String(e)}`));
 });
 stopBtn.addEventListener("click", () => {
@@ -539,6 +666,7 @@ stopBtn.addEventListener("click", () => {
   );
 });
 void loadLogs();
+void loadMethods();
 
 engine.runRenderLoop(() => scene.render());
 window.addEventListener("resize", () => engine.resize());
