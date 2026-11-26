@@ -1,43 +1,49 @@
 /**
- * MS1 - AR scan visor skeleton.
+ * AR scan visor with anchoring (Stage B).
  *
- * - Babylon WebXR `immersive-ar` session
- * - hit-test reticle that tracks real surfaces
- * - "Place" creates a WebXR anchor holding a box (proves anchoring)
- * - streams the camera pose to the gateway (visible in the desktop viewer)
+ * Tap Scan with the reticle on an object:
+ *   1. grab the camera frame (WebXR `camera-access`)
+ *   2. hit-test at the reticle -> metric distance to the surface
+ *   3. POST /scan -> camera-space contour + OBB + relative depth
+ *   4. scale = hitTestDistance / depthAtCentre  (relative depth -> metres)
+ *   5. unproject the contour into world space, anchor it to an XRAnchor
  *
- * Deliberately minimal: no inference, no HUD cards yet (those are MS2-MS4).
+ * The camera-space convention is OpenCV's (+x right, +y down, +z forward); the
+ * phone owns the transform (see docs/LIFTING.md sections 4-5).
  */
 import { Engine } from "@babylonjs/core/Engines/engine";
 import { Scene } from "@babylonjs/core/scene";
-import { Vector3, Quaternion } from "@babylonjs/core/Maths/math.vector";
+import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
+import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
 import { WebXRDefaultExperience } from "@babylonjs/core/XR/webXRDefaultExperience";
 import { WebXRFeatureName } from "@babylonjs/core/XR/webXRFeaturesManager";
-// Side-effect imports register each feature with the features manager.
 import "@babylonjs/core/XR/features/WebXRHitTest";
 import "@babylonjs/core/XR/features/WebXRAnchorSystem";
 import "@babylonjs/core/XR/features/WebXRDOMOverlay";
 import type { WebXRHitTest } from "@babylonjs/core/XR/features/WebXRHitTest";
 import type { WebXRAnchorSystem } from "@babylonjs/core/XR/features/WebXRAnchorSystem";
+import type { Camera } from "@babylonjs/core/Cameras/camera";
+import type { Obb, Quat, ScanResult, Vec3 } from "@metroid-scan/shared";
 import { installDebugOverlay, log } from "./lib/debug";
 import { GatewayClient } from "./lib/gateway";
 
 installDebugOverlay();
-log("ar.ts loaded");
+log("ar.ts loaded (anchoring)");
 
 const sessionId = crypto.randomUUID();
-const RATE = 66; // ms between streamed poses
+const RATE = 66;
+const SCAN_METHOD = "yolo"; // fast, iGPU; swap to "sam2" for the best mask
+const MAX_EDGE = 640;
 
 // --- DOM --------------------------------------------------------------------
-
 const canvas = document.getElementById("app") as HTMLCanvasElement;
 const startOverlay = document.getElementById("start")!;
 const startBtn = document.getElementById("startBtn") as HTMLButtonElement;
 const hud = document.getElementById("hud")!;
-const placeBtn = document.getElementById("placeBtn") as HTMLButtonElement;
+const scanBtn = document.getElementById("scanBtn") as HTMLButtonElement;
 const clearBtn = document.getElementById("clearBtn") as HTMLButtonElement;
 const exitBtn = document.getElementById("exitBtn") as HTMLButtonElement;
 const statusEl = document.getElementById("status")!;
@@ -47,27 +53,20 @@ function setStatus(html: string) {
 }
 
 // --- gateway ----------------------------------------------------------------
-
 const gateway = new GatewayClient("device", sessionId, {
   onStatus: (s) => log(`ws ${s}`),
 });
 gateway.connect();
 
 // --- Babylon ----------------------------------------------------------------
-
 const engine = new Engine(canvas, true, { stencil: true });
 const scene = new Scene(engine);
-scene.clearColor = new Color4(0, 0, 0, 0); // transparent -> camera passthrough
+scene.clearColor = new Color4(0, 0, 0, 0);
 
 const reticleMat = new StandardMaterial("reticleMat", scene);
 reticleMat.emissiveColor = new Color3(0.49, 0.97, 0.77);
 reticleMat.disableLighting = true;
 reticleMat.alpha = 0.9;
-
-const boxMat = new StandardMaterial("boxMat", scene);
-boxMat.emissiveColor = new Color3(0.2, 0.7, 1);
-boxMat.alpha = 0.85;
-boxMat.disableLighting = true;
 
 const reticle = MeshBuilder.CreateTorus(
   "reticle",
@@ -78,17 +77,117 @@ reticle.rotationQuaternion = Quaternion.Identity();
 reticle.material = reticleMat;
 reticle.isVisible = false;
 
-const placed: import("@babylonjs/core/Meshes/mesh").Mesh[] = [];
-
 let xr: WebXRDefaultExperience | null = null;
 let hitTest: WebXRHitTest | null = null;
 let anchorSystem: WebXRAnchorSystem | null = null;
 let currentHit: { position: Vector3; quaternion: Quaternion } | null = null;
 let frameCount = 0;
 let lastPoseSend = 0;
+let anchorCount = 0;
 
+const placedAnchors: { remove(): void }[] = [];
+const placedNodes: TransformNode[] = [];
+
+// --- camera-access capture --------------------------------------------------
+interface CaptureFrame {
+  base64: string;
+  width: number;
+  height: number;
+  fovDeg: number;
+}
+
+let pendingCapture: ((f: CaptureFrame | null) => void) | null = null;
+
+function grabFrame(): Promise<CaptureFrame | null> {
+  return new Promise((resolve) => {
+    pendingCapture = resolve;
+    window.setTimeout(() => {
+      if (pendingCapture === resolve) {
+        pendingCapture = null;
+        resolve(null);
+      }
+    }, 1500);
+  });
+}
+
+/** Horizontal FOV from the XR view's projection matrix. */
+function viewFov(view: XRView): number {
+  const fx = view.projectionMatrix[0];
+  if (!fx || !Number.isFinite(fx) || fx <= 0) return 60;
+  return (2 * Math.atan(1 / fx) * 180) / Math.PI;
+}
+
+function captureNow(): CaptureFrame | null {
+  const sm = xr?.baseExperience?.sessionManager;
+  const gl = engine._gl;
+  if (!sm || !gl) return null;
+  const frame = sm.currentFrame;
+  const refSpace = sm.referenceSpace;
+  if (!frame || !refSpace) return null;
+  const pose = frame.getViewerPose(refSpace);
+  const view = pose?.views[0];
+  if (!view) return null;
+
+  let texture: WebGLTexture | null = null;
+  try {
+    // `getCameraImage` is the camera-access spec; not in this @types/webxr yet.
+    const binding = new XRWebGLBinding(sm.session, gl) as unknown as {
+      getCameraImage(view: XRView): WebGLTexture | null;
+    };
+    texture = binding.getCameraImage(view);
+  } catch (e) {
+    log(`getCameraImage failed: ${String(e)}`);
+    return null;
+  }
+  if (!texture) {
+    log("camera-access unavailable (camera-access feature / permission?)");
+    return null;
+  }
+
+  const cam = (view as unknown as { camera?: { width: number; height: number } })
+    .camera;
+  const w = cam?.width ?? gl.drawingBufferWidth;
+  const h = cam?.height ?? gl.drawingBufferHeight;
+
+  const prevFb = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+  const fb = gl.createFramebuffer()!;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+  const pixels = new Uint8Array(w * h * 4);
+  gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, prevFb);
+  gl.deleteFramebuffer(fb);
+
+  // WebGL is bottom-up; flip vertically and downscale into a JPEG.
+  const src = document.createElement("canvas");
+  src.width = w;
+  src.height = h;
+  src
+    .getContext("2d")!
+    .putImageData(new ImageData(new Uint8ClampedArray(pixels.buffer), w, h), 0, 0);
+
+  const scale = Math.min(1, MAX_EDGE / Math.max(w, h));
+  const outW = Math.max(1, Math.round(w * scale));
+  const outH = Math.max(1, Math.round(h * scale));
+  const dst = document.createElement("canvas");
+  dst.width = outW;
+  dst.height = outH;
+  const ctx = dst.getContext("2d")!;
+  ctx.translate(0, outH);
+  ctx.scale(1, -1);
+  ctx.drawImage(src, 0, 0, outW, outH);
+  const url = dst.toDataURL("image/jpeg", 0.8);
+
+  return {
+    base64: url.slice(url.indexOf(",") + 1),
+    width: outW,
+    height: outH,
+    fovDeg: viewFov(view),
+  };
+}
+
+// --- XR setup ---------------------------------------------------------------
 async function setupXr() {
-  log("creating default XR experience…");
   xr = await WebXRDefaultExperience.CreateAsync(scene, {
     disableDefaultUI: true,
     disableTeleportation: true,
@@ -96,12 +195,9 @@ async function setupXr() {
     disableNearInteraction: true,
     disableHandTracking: true,
   });
-  if (!xr || !xr.baseExperience) {
-    throw new Error("WebXR base experience unavailable");
-  }
+  if (!xr?.baseExperience) throw new Error("WebXR base experience unavailable");
   const fm = xr.baseExperience.featuresManager;
 
-  // HUD shown over the camera passthrough.
   fm.enableFeature(WebXRFeatureName.DOM_OVERLAY, "latest", {
     element: hud,
     supressXRSelectEvents: true,
@@ -110,18 +206,15 @@ async function setupXr() {
     disablePermanentHitTest: false,
     enableTransientHitTest: true,
   }) as WebXRHitTest | null;
-  anchorSystem = fm.enableFeature(
-    WebXRFeatureName.ANCHOR_SYSTEM,
-    "latest",
-    { doNotRemoveAnchorsOnSessionEnded: false },
-  ) as WebXRAnchorSystem | null;
+  anchorSystem = fm.enableFeature(WebXRFeatureName.ANCHOR_SYSTEM, "latest", {
+    doNotRemoveAnchorsOnSessionEnded: false,
+  }) as WebXRAnchorSystem | null;
 
-  log(`hit-test feature: ${hitTest ? "on" : "OFF"}`);
-  log(`anchor feature: ${anchorSystem ? "on" : "OFF"}`);
+  log(`hit-test: ${hitTest ? "on" : "OFF"} | anchors: ${anchorSystem ? "on" : "OFF"}`);
 
   hitTest?.onHitTestResultObservable.add((results) => {
-    if (results.length > 0) {
-      const r = results[0]!;
+    const r = results[0];
+    if (r) {
       reticle.isVisible = true;
       reticle.position.copyFrom(r.position);
       reticle.rotationQuaternion!.copyFrom(r.rotationQuaternion);
@@ -129,11 +222,11 @@ async function setupXr() {
         position: r.position.clone(),
         quaternion: r.rotationQuaternion.clone(),
       };
-      placeBtn.disabled = false;
+      scanBtn.disabled = false;
     } else {
       reticle.isVisible = false;
       currentHit = null;
-      placeBtn.disabled = true;
+      scanBtn.disabled = true;
     }
   });
 }
@@ -141,19 +234,13 @@ async function setupXr() {
 async function enterAr() {
   if (!xr?.baseExperience) return;
   try {
-    await xr.baseExperience.enterXRAsync(
-      "immersive-ar",
-      "local-floor",
-      xr.renderTarget,
-      {
-        requiredFeatures: ["hit-test", "anchors"],
-        optionalFeatures: ["plane-detection", "light-estimation", "dom-overlay"],
-      },
-    );
+    await xr.baseExperience.enterXRAsync("immersive-ar", "local-floor", xr.renderTarget, {
+      requiredFeatures: ["hit-test", "anchors"],
+      optionalFeatures: ["camera-access", "plane-detection", "light-estimation", "dom-overlay"],
+    });
     startOverlay.style.display = "none";
     hud.style.display = "block";
     const session = xr.baseExperience.sessionManager.session;
-    session.addEventListener("select", () => void place());
     session.addEventListener("end", () => {
       hud.style.display = "none";
       startOverlay.style.display = "flex";
@@ -166,54 +253,215 @@ async function enterAr() {
   }
 }
 
-async function place() {
-  if (!currentHit || !anchorSystem) {
-    log("place: no hit");
+// --- camera-space -> world --------------------------------------------------
+interface Basis {
+  right: Vector3;
+  up: Vector3;
+  forward: Vector3;
+}
+
+function cameraBasis(camera: Camera): Basis {
+  return {
+    right: camera.getDirection(Vector3.Right()).normalize(),
+    up: camera.getDirection(Vector3.Up()).normalize(),
+    forward: camera.getDirection(Vector3.Forward()).normalize(),
+  };
+}
+
+function quatToMat3(q: Quat): number[][] {
+  const [x, y, z, w] = q;
+  return [
+    [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+    [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+    [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+  ];
+}
+
+function mat3Apply(m: number[][], v: Vec3): Vec3 {
+  return [
+    m[0]![0]! * v[0] + m[0]![1]! * v[1] + m[0]![2]! * v[2],
+    m[1]![0]! * v[0] + m[1]![1]! * v[1] + m[1]![2]! * v[2],
+    m[2]![0]! * v[0] + m[2]![1]! * v[1] + m[2]![2]! * v[2],
+  ];
+}
+
+function obbEdges(): [number, number][] {
+  const edges: [number, number][] = [];
+  for (let i = 0; i < 8; i++) {
+    for (const bit of [1, 2, 4]) {
+      const j = i ^ bit;
+      if (j > i) edges.push([i, j]);
+    }
+  }
+  return edges;
+}
+
+// --- scan + anchor ----------------------------------------------------------
+async function scanAndAnchor() {
+  const sm = xr?.baseExperience?.sessionManager;
+  if (!sm || !anchorSystem) return;
+  if (!currentHit) {
+    setStatus("no surface under the reticle");
     return;
   }
-  const pos = currentHit.position.clone();
-  const quat = currentHit.quaternion.clone();
-  const SIZE = 0.12;
-  const id = `box-${placed.length}`;
+  const camera = scene.activeCamera;
+  if (!camera) return;
+
+  const hitPos = currentHit.position.clone();
+  const camPos = camera.globalPosition.clone();
+  const distance = Vector3.Distance(hitPos, camPos);
+  const basis = cameraBasis(camera);
+
+  setStatus("capturing…");
+  const frame = await grabFrame();
+  if (!frame) {
+    setStatus("capture failed — see log");
+    return;
+  }
+  log(
+    `captured ${frame.width}×${frame.height} fov=${frame.fovDeg.toFixed(1)}° | ` +
+      `hit ${distance.toFixed(2)}m from ${camPos.x.toFixed(2)},${camPos.y.toFixed(2)},${camPos.z.toFixed(2)}`,
+  );
+  setStatus(`scanning (${SCAN_METHOD})…`);
+
+  let data: ScanResult;
   try {
-    const box = MeshBuilder.CreateBox(id, { size: SIZE }, scene);
-    box.material = boxMat;
-    box.position.copyFrom(pos);
-    const anchor = await anchorSystem.addAnchorAtPositionAndRotationAsync(pos, quat);
-    anchor.attachedNode = box;
-    placed.push(box);
-    gateway.sendAnchor(
-      id,
-      [pos.x, pos.y, pos.z],
-      [quat.x, quat.y, quat.z, quat.w],
-      [SIZE, SIZE, SIZE],
+    const res = await fetch("/api/scan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        image: frame.base64,
+        frameId: String(Date.now()),
+        aimX: 0.5,
+        aimY: 0.5,
+        method: SCAN_METHOD,
+        fovDeg: frame.fovDeg,
+      }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    data = (await res.json()) as ScanResult;
+  } catch (e) {
+    log(`scan failed: ${String(e)}`);
+    setStatus("scan failed");
+    return;
+  }
+
+  const aimed = data.aimed;
+  if (!aimed?.contourCam?.length || !aimed.obbCam || !aimed.depthAtCentre) {
+    setStatus("nothing scanned — aim at an object");
+    return;
+  }
+
+  const s = distance / aimed.depthAtCentre;
+  const toWorld = (p: Vec3) =>
+    camPos
+      .add(basis.right.scale(s * p[0]))
+      .add(basis.up.scale(-s * p[1])) // server +y is down
+      .add(basis.forward.scale(s * p[2]));
+  const centroid = toWorld(aimed.obbCam.center);
+
+  log(
+    `SCAN ${aimed.name}: hitDist=${distance.toFixed(2)}m depthAtCentre=${aimed.depthAtCentre.toFixed(2)} ` +
+      `scale=${s.toFixed(3)} contour=${aimed.contourCam.length}pts centroid=${centroid.x.toFixed(2)},${centroid.y.toFixed(2)},${centroid.z.toFixed(2)}`,
+  );
+
+  try {
+    await anchorObject(aimed, centroid, toWorld, s);
+    setStatus(
+      `anchored <b>${aimed.name}</b><br>${data.detections.length} mask(s) · ${s.toFixed(2)}× scale`,
     );
-    log(`anchor #${placed.length} placed @ ${pos.x.toFixed(2)},${pos.y.toFixed(2)},${pos.z.toFixed(2)}`);
   } catch (e) {
     log(`anchor failed: ${String(e)}`);
+    setStatus("anchor failed");
   }
 }
 
-function clearBoxes() {
-  for (const b of placed) b.dispose();
-  placed.length = 0;
-  anchorSystem?.anchors.forEach((a) => a.remove());
-  gateway.sendAnchorClear();
-  log("cleared");
+async function anchorObject(
+  aimed: NonNullable<ScanResult["aimed"]>,
+  centroid: Vector3,
+  toWorld: (p: Vec3) => Vector3,
+  scale: number,
+) {
+  if (!anchorSystem) return;
+  const id = `scan-${anchorCount}`;
+  const node = new TransformNode(id, scene);
+  node.position.copyFrom(centroid);
+
+  // The smooth outline, relative to the centroid.
+  const outline = aimed.contourCam!.map((p) => toWorld(p).subtract(centroid));
+  const line = MeshBuilder.CreateLines(`${id}-outline`, { points: outline }, scene);
+  line.color = new Color3(1, 0.83, 0.31);
+  line.isPickable = false;
+  line.parent = node;
+
+  // OBB wireframe.
+  const obb = aimed.obbCam!;
+  const R = quatToMat3(obb.quat);
+  const half = obb.size.map((v) => v / 2) as Vec3;
+  const corners: Vec3[] = [];
+  for (const sx of [-1, 1])
+    for (const sy of [-1, 1])
+      for (const sz of [-1, 1])
+        corners.push([sx * half[0], sy * half[1], sz * half[2]]);
+  const worldCorners = corners.map((c) => {
+    const r = mat3Apply(R, c);
+    const camPoint: Vec3 = [
+      obb.center[0] + r[0],
+      obb.center[1] + r[1],
+      obb.center[2] + r[2],
+    ];
+    return toWorld(camPoint).subtract(centroid);
+  });
+  const box = MeshBuilder.CreateLineSystem(
+    `${id}-obb`,
+    { lines: obbEdges().map(([a, b]) => [worldCorners[a]!, worldCorners[b]!]) },
+    scene,
+  );
+  box.color = new Color3(0.49, 0.97, 0.77);
+  box.isPickable = false;
+  box.parent = node;
+
+  const anchor = await anchorSystem.addAnchorAtPositionAndRotationAsync(
+    centroid,
+    Quaternion.Identity(),
+  );
+  anchor.attachedNode = node;
+  placedAnchors.push(anchor);
+  placedNodes.push(node);
+  anchorCount++;
+
+  gateway.sendAnchor(
+    id,
+    [centroid.x, centroid.y, centroid.z],
+    [0, 0, 0, 1],
+    aimed.obbCam!.size.map((v) => v * scale) as Vec3,
+    outline.map((p) => [p.x, p.y, p.z] as Vec3),
+    aimed.name,
+  );
 }
 
+function clearAnchors() {
+  for (const node of placedNodes) node.dispose(false, true);
+  placedNodes.length = 0;
+  for (const anchor of placedAnchors) anchor.remove();
+  placedAnchors.length = 0;
+  anchorCount = 0;
+  gateway.sendAnchorClear();
+  setStatus("cleared");
+}
+
+// --- pose streaming ---------------------------------------------------------
 async function streamPose() {
   const cam = scene.activeCamera;
-  if (!cam) return;
+  if (!cam || !xr?.baseExperience) return;
   const now = performance.now();
   if (now - lastPoseSend < RATE) return;
   lastPoseSend = now;
-  const world = cam.getWorldMatrix();
   const scale = new Vector3();
   const quat = new Quaternion();
   const pos = new Vector3();
-  world.decompose(scale, quat, pos);
-  const forward = new Vector3(0, 0, 1).applyRotationQuaternion(quat).normalize();
+  cam.getWorldMatrix().decompose(scale, quat, pos);
+  const forward = cam.getDirection(Vector3.Forward()).normalize();
   gateway.setPose(
     [pos.x, pos.y, pos.z],
     [quat.x, quat.y, quat.z, quat.w],
@@ -221,29 +469,37 @@ async function streamPose() {
     "tracked",
   );
   frameCount++;
-  if (frameCount % 15 === 0) {
+  if (frameCount % 30 === 0 && placedNodes.length === 0) {
     setStatus(
-      `tracking · ${frameCount} frames<br>` +
-        `pos ${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}<br>` +
-        `${placed.length} anchor(s)`,
+      `tracking · pos ${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}`,
     );
   }
 }
 
 scene.onBeforeRenderObservable.add(() => {
+  if (pendingCapture) {
+    const resolve = pendingCapture;
+    pendingCapture = null;
+    let frame: CaptureFrame | null = null;
+    try {
+      frame = captureNow();
+    } catch (e) {
+      log(`capture error: ${String(e)}`);
+    }
+    resolve(frame);
+  }
   void streamPose();
 });
 
 startBtn.addEventListener("click", () => void enterAr());
-placeBtn.addEventListener("click", () => void place());
-clearBtn.addEventListener("click", () => clearBoxes());
+scanBtn.addEventListener("click", () => void scanAndAnchor());
+clearBtn.addEventListener("click", () => clearAnchors());
 exitBtn.addEventListener("click", () => void xr?.baseExperience?.exitXRAsync());
 
 engine.runRenderLoop(() => scene.render());
 window.addEventListener("resize", () => engine.resize());
 
 // --- boot -------------------------------------------------------------------
-
 (async () => {
   try {
     const supported = await navigator.xr?.isSessionSupported("immersive-ar");
@@ -254,7 +510,7 @@ window.addEventListener("resize", () => engine.resize());
     }
     await setupXr();
     startBtn.disabled = false;
-    setStatus("Ready. Tap Start to scan.");
+    setStatus("Ready. Tap Start.");
   } catch (e) {
     log(`boot error: ${String(e)}`);
     setStatus(`boot error: ${String(e)}`);

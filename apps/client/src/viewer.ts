@@ -100,6 +100,7 @@ anchorMat.emissiveColor = new Color3(0.2, 0.7, 1);
 anchorMat.alpha = 0.85;
 anchorMat.disableLighting = true;
 const anchorMeshes = new Map<string, ReturnType<typeof MeshBuilder.CreateBox>>();
+const contourMeshes = new Map<string, ReturnType<typeof MeshBuilder.CreateLines>>();
 
 const gateway = new GatewayClient("viewer", sessionId, {
   onStatus: (s) => {
@@ -135,11 +136,30 @@ const gateway = new GatewayClient("viewer", sessionId, {
     mesh.position.set(...msg.position);
     if (!mesh.rotationQuaternion) mesh.rotationQuaternion = Quaternion.Identity();
     mesh.rotationQuaternion.set(...msg.quaternion);
+
+    // World-space outline (relative to the anchor position).
+    contourMeshes.get(msg.id)?.dispose();
+    if (msg.contour && msg.contour.length > 1) {
+      const points = msg.contour.map(
+        (p) =>
+          new Vector3(
+            msg.position[0] + p[0],
+            msg.position[1] + p[1],
+            msg.position[2] + p[2],
+          ),
+      );
+      const line = MeshBuilder.CreateLines(`${msg.id}-outline`, { points }, scene);
+      line.color = new Color3(1, 0.83, 0.31);
+      contourMeshes.set(msg.id, line);
+      log(`  outline ${msg.contour.length}pts (${msg.label ?? "?"})`);
+    }
   },
   onAnchorClear: (msg) => {
     if (msg.sessionId) {
       for (const m of anchorMeshes.values()) m.dispose();
       anchorMeshes.clear();
+      for (const m of contourMeshes.values()) m.dispose();
+      contourMeshes.clear();
       log("anchors cleared");
     }
   },

@@ -31,7 +31,7 @@
         border-radius: 12px; border: 1px solid #2b4149; background: #12242b;
         color: #eaf6f3; }
       #controls button:disabled { opacity: .4; }
-      #placeBtn { background: #0e3a2f; border-color: #1e7a5f; }
+      #scanBtn { background: #0e3a2f; border-color: #1e7a5f; }
 
       /* Pre-session overlay */
       #start { position: fixed; inset: 0; z-index: 20; display: flex;
@@ -53,7 +53,7 @@
       <pre id="debug"></pre>
       <div id="reticle"></div>
       <div id="controls">
-        <button id="placeBtn" disabled>Place</button>
+        <button id="scanBtn" disabled>Scan</button>
         <button id="clearBtn">Clear</button>
         <button id="exitBtn">Exit</button>
       </div>
@@ -61,7 +61,10 @@
 
     <div id="start">
       <h1>SCAN VISOR</h1>
-      <p>Point at the floor and tap <b>Place</b> to drop an anchored marker.</p>
+      <p>
+        Aim the reticle at an object and tap <b>Scan</b> to segment it and anchor a
+        3D outline to it.
+      </p>
       <button id="startBtn" disabled>Checking support…</button>
       <a id="back" href="/">&larr; back</a>
     </div>

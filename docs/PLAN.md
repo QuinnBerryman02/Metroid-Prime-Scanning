@@ -79,6 +79,14 @@ Stage B (done):
       as a long-press radial wheel; depth replaces the camera feed.
 - [ ] Optional: CLIP zero-shot classifier on crops; Florence-2 caption (async).
 
+Stage B (phone side) - anchoring:
+
+- [x] AR: capture a frame (`camera-access`), hit-test distance, `/scan`, scale by
+      `hitTestDistance / depthAtCentre`, world-transform, create an `XRAnchor`
+      with the 3D outline + OBB, and relay it to the desktop viewer.
+- [ ] Tune the camera-image FOV (intrinsics aren't exposed by camera-access).
+- [ ] Move the wheel into AR (currently a Scan button).
+
 **Stage A done when:** a photo gives labels back in < ~150 ms. (achieved, ~20 ms)
 **Stage B done when:** the aimed object yields a camera-space contour + OBB. (achieved)
 

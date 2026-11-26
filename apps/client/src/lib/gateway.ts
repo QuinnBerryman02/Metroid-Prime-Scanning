@@ -101,8 +101,19 @@ export class GatewayClient {
     position: Vec3,
     quaternion: Quat,
     size: Vec3,
+    contour?: Vec3[],
+    label?: string,
   ) {
-    this.send({ type: "anchor", sessionId: this.sessionId, id, position, quaternion, size });
+    this.send({
+      type: "anchor",
+      sessionId: this.sessionId,
+      id,
+      position,
+      quaternion,
+      size,
+      contour,
+      label,
+    });
   }
 
   sendAnchorClear() {

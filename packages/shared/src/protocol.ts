@@ -186,7 +186,7 @@ export interface PoseMsg {
   tracking: "tracked" | "lost";
 }
 
-/** Device -> server -> viewer: a world-anchored box placed by the user. */
+/** Device -> server -> viewer: a world-anchored scanned object. */
 export interface AnchorMsg {
   type: "anchor";
   sessionId: string;
@@ -194,6 +194,9 @@ export interface AnchorMsg {
   position: Vec3;
   quaternion: Quat;
   size: Vec3;
+  /** World-space outline relative to `position` (metres). */
+  contour?: Vec3[];
+  label?: string;
 }
 
 /** Device -> server -> viewer: remove all anchors for a session. */

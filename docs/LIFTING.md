@@ -185,3 +185,22 @@ different scale - both are cheap to do client-side, so we keep it in `/scan`.
 
 We start at **A** (the user's call) and the server API is designed so **B** and
 **C** are additive fields, not a rewrite.
+
+### Implemented (Stage B, phone side)
+
+`ar.ts` now runs the whole loop. On **Scan**:
+
+1. **capture** the camera frame via WebXR `camera-access`
+   (`XRWebGLBinding.getCameraImage(view)` -> `readPixels` -> JPEG).
+2. hit-test at the reticle -> metric distance `D` from the camera.
+3. `POST /scan` (`method`, `fovDeg` from the view projection matrix).
+4. `s = D / aimed.depthAtCentre`.
+5. `P_world = camPos + s·(x·right - y·up + z·forward)` using the camera's
+   world basis, then create an `XRAnchor` at `obbCam.center` and attach the
+   outline + OBB wireframe as children of a node (relative to the centroid).
+6. relay the anchor + outline to the desktop viewer over the gateway.
+
+> Caveat: `camera-access` does not expose camera intrinsics, so `fovDeg` comes
+> from the AR view's projection matrix. If the camera image is wider than the AR
+> view the outline's horizontal spread will be off - tunable via `FOV_DEG` / the
+> request's `fovDeg`.
