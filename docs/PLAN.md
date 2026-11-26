@@ -94,19 +94,38 @@ Stage B (phone side) - anchoring:
 
 ---
 
-## Milestone 3 - 2D -> 3D lifting & world model (1-1.5 weeks)
+## Milestone 3 - Dense world model (2-2.5 weeks)
 
-- [ ] Depth service (Depth Anything V2 small) or consume WebXR depth if available.
-- [ ] On the server: unproject mask ∩ depth using pose + intrinsics -> world points.
-- [ ] Reduce points to an OBB/hull; create a `WorldObject`.
-- [ ] Fusion: match new detections to existing objects (centroid + IoU) -> update vs add.
-- [ ] Persist session world state; broadcast deltas.
+> **Re-scoped.** Single-view lifting is proven (`docs/LIFTING.md`) but has a hard
+> ceiling (one-sided shell, frozen noise). We are moving to a **fused** map:
+> stream keyframes, fuse depth into a world voxel/TSDF, then segment objects.
+> Full plan + milestones: [`docs/RECONSTRUCTION.md`](RECONSTRUCTION.md).
+> Why we do **not** bolt on ORB-SLAM3 / SVO Pro (ARCore already does VIO, and
+> classic SLAM maps are sparse): [`docs/SLAM_SURVEY.md`](SLAM_SURVEY.md).
 
-**Done when:** scanning the same object twice updates one entry (no duplicates), and its
-OBB sits on the object in the world frame.
+Single-view lifting (Stage B) - **done, now the close-up path**:
 
-**De-risk here:** intrinsics (WebXR `XRWebGLLayer.getViewport` + projection matrix
-inversion), depth scale, robust point reduction.
+- [x] Depth Anything V2 (OpenVINO iGPU, ~150 ms), inverse-depth fix, robust
+      depth so outlines aren't jaggy.
+- [x] Unproject mask ∩ depth -> camera-space `contourCam` + `obbCam`; phone
+      applies hit-test scale and anchors it. See `docs/LIFTING.md`.
+
+Fused reconstruction (the new work):
+
+- [ ] **MS3.0** keyframe streaming (JPEG + pose + intrinsics + ARCore planes).
+- [ ] **MS3.1** metric scale: affine fit `Z = a·(1/d_rel) + b` from ARCore planes.
+- [ ] **MS3.2** voxel fusion in the ARCore frame; viewer renders the live cloud.
+- [ ] **MS3.3** structure: ARCore + RANSAC planes, excluded from the object pool.
+- [ ] **MS3.4** DBSCAN clustering + scoring + tracking -> candidate objects with IDs.
+- [ ] **MS3.5** multi-view render -> CLIP labelling.
+- [ ] **MS3.6** anchor promotion on the phone (fused objects -> scanable HUD targets).
+
+**Done when:** walking around a room produces a recognisable point cloud on the
+desktop, a chair/desk appears as a single tracked candidate with a label, and the
+phone can anchor + scan it.
+
+**De-risk here:** metric scale (the plane fit), pose/frame sync, fusion memory,
+depth warping.
 
 ---
 

@@ -100,6 +100,12 @@ camera frame (RGB) ─┬─> detector (YOLO11n) ──> boxes + classes
         cluster/fuse with existing objects (IoU / centroid distance)  ->  WorldObject
 ```
 
+> **Superceded for the *environment* model.** The single-view path below stays as the
+> **close-up object scan** (crisp, deliberate). The world/environment is now built by
+> **fusing streamed keyframes into a world voxel map** (pose from ARCore, depth from
+> DA V2, scale from ARCore planes) and segmenting that. See
+> [`docs/RECONSTRUCTION.md`](RECONSTRUCTION.md) and [`docs/SLAM_SURVEY.md`](SLAM_SURVEY.md).
+
 **Lifting a mask to 3D** (per object):
 - Take masked pixels, sample their depth, unproject with intrinsics
   `p_world = T_world_cam · K⁻¹ · [u,v,1]ᵀ · d(u,v)`.
