@@ -240,6 +240,29 @@ non-monotonic (2 cm 3.5 cm, 5 cm 5.6 cm, 10 cm 2.7 cm) because larger voxels
 straddle more surface *edges*, where a voxel mean legitimately sits inside the
 corner. Trust the timing / memory / obs-per-voxel columns, not that one.
 
+### Tuning loop: record a run, replay it offline
+
+On-device iteration is far too slow to explore a parameter space (one tap, one
+cloud, one opinion). So the service records every keyframe:
+
+```
+services/inference/recon_log/<session>/NNNN.{jpg,json}    (RECON_RECORD=1)
+```
+
+`scripts/replay_recon.py <dir>` re-fuses the same frames under different scales,
+voxel sizes, strides and methods, caches the depth maps as `NNNN.npy` so repeat
+runs are fast, and can dump a coloured PLY (`--ply`) of any variant.
+
+**A caution that cost us a wrong turn.** The obvious objective - score a scale by
+how compact the fused map is - is *degenerate*: shrinking the scale always packs
+points into fewer voxels, so it monotonically prefers small `a`. That is not a
+bug but a property of the problem: under a purely geometric objective the global
+scale of a monocular reconstruction is **unobservable** (the same reason
+monocular SLAM has scale ambiguity), and a hand-held walk-around has too little
+parallax to break it. **Global scale must come from a metric reference** -
+ARCore's planes or its hit-test. Replay is for comparing *consistency* of
+per-frame scale sources, and for eyeballing methods - not for searching for scale.
+
 ### Why TSDF is the real target (not just the accumulator)
 
 The measurement above shows the naive accumulator **does** average (8 obs/voxel

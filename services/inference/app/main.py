@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import binascii
 import io
+import json
 import logging
 import threading
 import time
@@ -46,6 +47,7 @@ from .lifting import (
 from .methods import METHODS, METHOD_SPECS, Segmenter, describe, device_for
 from .fusion import (
     AFFINE_MIN_SPREAD,
+    ScaleFit,
     ScaleTracker,
     VoxelMap,
     encode_points,
@@ -252,6 +254,30 @@ def _scale_why(planes: list[dict], diag: dict[str, Any]) -> str:
     )
 
 
+def _record_keyframe(req: ReconFrameRequest, raw: bytes) -> None:
+    """Persist a keyframe (JPEG + request JSON) so it can be replayed offline.
+
+    On-device iteration is far too slow to explore a parameter space, so every
+    walk-around is kept as a dataset: `scripts/replay_recon.py` can then re-fuse
+    the same frames under different scales, voxel sizes and methods and compare
+    them without touching the phone.
+    """
+    if not config.RECON_RECORD:
+        return
+    try:
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in req.sessionId)
+        folder = config.RECON_DIR / (safe[:48] or "unknown")
+        folder.mkdir(parents=True, exist_ok=True)
+        idx = len(list(folder.glob("*.json"))) + 1
+        (folder / f"{idx:04d}.jpg").write_bytes(raw)
+        (folder / f"{idx:04d}.json").write_text(
+            json.dumps(req.model_dump(exclude={"image"}), separators=(",", ":")),
+            encoding="utf-8",
+        )
+    except Exception as e:  # noqa: BLE001 - recording must never break the loop
+        log.warning("recon record failed: %s", e)
+
+
 def _recon_entry(rs: dict[str, Any], session_id: str) -> dict[str, Any]:
     """Per-session voxel map + scale tracker. Small LRU across sessions."""
     maps: dict[str, Any] = rs["maps"]
@@ -303,6 +329,7 @@ def _fuse_keyframe(
         pil = Image.open(io.BytesIO(raw)).convert("RGB")
     except Exception as e:  # noqa: BLE001
         return _skip(rs, entry, f"bad image: {e}")
+    _record_keyframe(req, raw)
     img = np.array(pil)
     height, width = img.shape[:2]
     rs["last"] = {
@@ -345,6 +372,37 @@ def _fuse_keyframe(
         if rel_centre > 1e-6:
             hit_scale = req.hitDistance / rel_centre
 
+    # A plane fit is only a fit if its residual is small. On real data the bad
+    # ones show rms ~1-2 m over a ~1.6 m spread, i.e. noise, and they were being
+    # averaged straight into the tracker.
+    if fresh is not None and fresh.rms > config.RECON_SCALE_RMS_MAX:
+        log.warning(
+            "recon plane fit rejected: rms=%.3f m > %.2f (a=%.3f, %s)",
+            fresh.rms,
+            config.RECON_SCALE_RMS_MAX,
+            fresh.a,
+            fresh.method,
+        )
+        fresh = None
+
+    # An independent metric measurement beats a bad fit. If the hit-test and the
+    # planes disagree, trust the hit-test - it is the source the scan path has
+    # always used, and it measures one point rather than fitting a line to noisy
+    # correspondences.
+    source = "planes"
+    if hit_scale is not None and hit_scale > 0:
+        if fresh is None or not 0.7 < hit_scale / fresh.a < 1.4:
+            if fresh is not None:
+                log.warning(
+                    "recon scale disagreement: planes a=%.3f vs hit-test a=%.3f "
+                    "(%.2fx) -> using hit-test",
+                    fresh.a,
+                    hit_scale,
+                    hit_scale / fresh.a,
+                )
+            fresh = ScaleFit(hit_scale, 0.0, 0, 0.0, "hit")
+            source = "hit-test"
+
     fit = entry["tracker"].update(fresh)
     timing["scale"] = round((time.perf_counter() - t) * 1000, 2)
     if fit is None:
@@ -352,15 +410,6 @@ def _fuse_keyframe(
     # Fusing on the tracked scale is fine occasionally, but if this happens on
     # every frame the map is being built on a scale nothing is validating.
     scale_note = None if fresh is not None else f"scale held a={fit.a:.2f} - {why}"
-    if hit_scale is not None and fit.a > 0:
-        ratio = hit_scale / fit.a
-        if not 0.7 < ratio < 1.4:
-            log.warning(
-                "recon scale disagreement: planes a=%.3f vs hit-test a=%.3f (%.2fx)",
-                fit.a,
-                hit_scale,
-                ratio,
-            )
 
     # 3. MS3.2 - unproject and fuse into the world voxel map
     t = time.perf_counter()
@@ -382,7 +431,7 @@ def _fuse_keyframe(
     voxels: VoxelMap = entry["voxels"]
     log.info(
         "recon %s fused %d pts -> %d voxels | scale %s a=%.3f b=%.3f rms=%.3f "
-        "(%d planes, %d tracked) %.0f ms",
+        "src=%s (%d planes, %d tracked) %.0f ms",
         req.frameId,
         points.shape[0],
         voxels.size,
@@ -390,6 +439,7 @@ def _fuse_keyframe(
         fit.a,
         fit.b,
         fit.rms,
+        source,
         len(req.planes),
         len(entry["tracker"].a),
         timing["total"],

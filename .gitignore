@@ -38,6 +38,7 @@ data/
 captures/
 scans/
 reports/
+recon_log/
 samples/
 
 # notebooks

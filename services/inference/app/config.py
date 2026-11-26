@@ -75,3 +75,12 @@ RECON_MAX_DEPTH = float(os.environ.get("RECON_MAX_DEPTH", "12.0"))
 RECON_CLOUD_EVERY = int(os.environ.get("RECON_CLOUD_EVERY", "4"))
 RECON_CLOUD_VOXEL = float(os.environ.get("RECON_CLOUD_VOXEL", "0.12"))
 RECON_CLOUD_MAX = int(os.environ.get("RECON_CLOUD_MAX", "30000"))
+
+# Record every keyframe (JPEG + full request JSON) to disk so a walk-around can
+# be replayed offline with different scales / voxel sizes / methods. This is the
+# tuning loop: on-device iteration is far too slow to explore a parameter space.
+RECON_RECORD = os.environ.get("RECON_RECORD", "1") == "1"
+RECON_DIR = Path(os.environ.get("RECON_DIR", str(ROOT / "recon_log")))
+# Reject a plane fit whose residual is this large in metres: on real data the
+# bad fits show rms ~1-2 m over a ~1.6 m spread, i.e. they are noise.
+RECON_SCALE_RMS_MAX = float(os.environ.get("RECON_SCALE_RMS_MAX", "0.25"))
