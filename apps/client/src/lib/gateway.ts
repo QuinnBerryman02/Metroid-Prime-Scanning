@@ -24,6 +24,11 @@ export interface GatewayHandlers {
     msg: Extract<ServerToClient, { type: "anchor_clear" }>,
   ) => void;
   onPlane?: (msg: Extract<ServerToClient, { type: "plane" }>) => void;
+  onReconKeyframe?: (
+    msg: Extract<ServerToClient, { type: "recon_keyframe" }>,
+  ) => void;
+  onReconStatus?: (msg: Extract<ServerToClient, { type: "recon_status" }>) => void;
+  onReconClear?: (msg: Extract<ServerToClient, { type: "recon_clear" }>) => void;
   onStatus?: (status: GatewayStatus, detail?: string) => void;
 }
 
@@ -70,6 +75,10 @@ export class GatewayClient {
       else if (msg.type === "anchor") this.handlers.onAnchor?.(msg);
       else if (msg.type === "anchor_clear") this.handlers.onAnchorClear?.(msg);
       else if (msg.type === "plane") this.handlers.onPlane?.(msg);
+      else if (msg.type === "recon_keyframe")
+        this.handlers.onReconKeyframe?.(msg);
+      else if (msg.type === "recon_status") this.handlers.onReconStatus?.(msg);
+      else if (msg.type === "recon_clear") this.handlers.onReconClear?.(msg);
     };
   }
 
@@ -126,6 +135,12 @@ export class GatewayClient {
     msg: Omit<Extract<ClientToServer, { type: "plane" }>, "type" | "sessionId">,
   ) {
     this.send({ type: "plane", sessionId: this.sessionId, ...msg });
+  }
+
+  sendReconFrame(
+    msg: Omit<Extract<ClientToServer, { type: "recon_frame" }>, "type" | "sessionId">,
+  ) {
+    this.send({ type: "recon_frame", sessionId: this.sessionId, ...msg });
   }
 
   close() {

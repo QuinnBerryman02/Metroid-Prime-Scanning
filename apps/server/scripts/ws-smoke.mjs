@@ -115,18 +115,59 @@ const late2 = await open("viewer");
 const replayedPlane = await waitFor(late2, "plane");
 check("plane replay to late viewer", replayedPlane.id === 3 && replayedPlane.action === "added");
 
-// planes are live: a device disconnect removes them from viewers
-rx = waitFor(viewer, "plane");
+// recon keyframe relay (MS3.0)
+const recon = {
+  type: "recon_frame",
+  sessionId: "smoke-device",
+  frameId: "kf-0",
+  position: [0, 1.6, 0],
+  quaternion: [0, 0, 0, 1],
+  fovDeg: 60,
+  width: 640,
+  height: 480,
+  image: "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8U",
+  reason: "first",
+  sharpness: 42.5,
+};
+rx = waitFor(viewer, "recon_keyframe");
+device.send(JSON.stringify(recon));
+const gotKf = await rx;
+check(
+  "recon keyframe relay",
+  gotKf.frameId === "kf-0" && gotKf.index === 0 && gotKf.fovDeg === 60,
+);
+
+// late viewer replays the keyframe breadcrumbs
+const late3 = await open("viewer");
+const replayedKf = await waitFor(late3, "recon_keyframe");
+check("recon replay to late viewer", replayedKf.frameId === "kf-0");
+
+// gateway status endpoint
+const httpUrl = url.replace(/^ws/, "http").replace(/\/ws$/, "/recon/status");
+const statusRes = await fetch(httpUrl);
+const status = await statusRes.json();
+check(
+  "GET /recon/status counts",
+  status.total === 1 && status.sessions[0]?.keyframes === 1,
+  JSON.stringify(status.sessions),
+);
+
+// a device disconnect clears planes AND keyframes from viewers
+const planeGone = waitFor(viewer, "plane");
+const reconGone = waitFor(viewer, "recon_clear");
 device.close();
-const removedPlane = await rx;
+const removedPlane = await planeGone;
 check(
   "plane removed on device disconnect",
   removedPlane.id === 3 && removedPlane.action === "removed",
 );
+const clearedRecon = await reconGone;
+check("recon cleared on device disconnect", clearedRecon.sessionId === "smoke-device");
 
 viewer.close();
 late.close();
 late2.close();
+late3.close();
 
 const ok = results.every(([, c]) => c);
 console.log(ok ? "\nALL PASS" : "\nFAILURES");

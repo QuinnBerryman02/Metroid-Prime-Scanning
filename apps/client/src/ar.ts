@@ -187,12 +187,20 @@ interface CaptureFrame {
   width: number;
   height: number;
   fovDeg: number;
+  /** Laplacian variance of the greyscale image; higher = sharper. */
+  sharpness: number;
 }
 
 let pendingCapture: ((f: CaptureFrame | null) => void) | null = null;
 
 function grabFrame(): Promise<CaptureFrame | null> {
   return new Promise((resolve) => {
+    // Only one capture can be in flight (there is a single `pendingCapture`
+    // slot); the loser gets null rather than hijacking the other's promise.
+    if (pendingCapture) {
+      resolve(null);
+      return;
+    }
     pendingCapture = resolve;
     window.setTimeout(() => {
       if (pendingCapture === resolve) {
@@ -201,6 +209,37 @@ function grabFrame(): Promise<CaptureFrame | null> {
       }
     }, 1500);
   });
+}
+
+/** Laplacian variance - the standard "is this frame blurry" score. */
+function laplacianVariance(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+): number {
+  const { data } = ctx.getImageData(0, 0, w, h);
+  const n = w * h;
+  const grey = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const p = i * 4;
+    grey[i] = 0.299 * data[p]! + 0.587 * data[p + 1]! + 0.114 * data[p + 2]!;
+  }
+  let sum = 0;
+  let sumSq = 0;
+  let count = 0;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const lap =
+        -4 * grey[i]! + grey[i - 1]! + grey[i + 1]! + grey[i - w]! + grey[i + w]!;
+      sum += lap;
+      sumSq += lap * lap;
+      count++;
+    }
+  }
+  if (count === 0) return 0;
+  const mean = sum / count;
+  return sumSq / count - mean * mean;
 }
 
 /** Horizontal FOV from the XR view's projection matrix. */
@@ -324,6 +363,7 @@ function captureNow(): CaptureFrame | null {
     ctx.translate(0, outH);
     ctx.scale(1, -1);
     ctx.drawImage(src, 0, 0, outW, outH);
+    const sharpness = laplacianVariance(ctx, outW, outH);
     const url = dst.toDataURL("image/jpeg", 0.8);
 
     return {
@@ -331,10 +371,95 @@ function captureNow(): CaptureFrame | null {
       width: outW,
       height: outH,
       fovDeg: viewFov(view),
+      sharpness,
     };
   } catch (e) {
     diag.error("capture.encode", e);
     return null;
+  }
+}
+
+// --- keyframes (MS3.0) ------------------------------------------------------
+// A keyframe is a frame worth *fusing* later: new enough, moved enough, sharp
+// enough, and not a duplicate. Captures are expensive (readPixels + JPEG + a
+// blur score), so gate them hard - ~2-3 Hz is plenty for reconstruction.
+const KF_MIN_INTERVAL_MS = 350;
+const KF_MIN_MOVE = 0.02; // metres
+const KF_MIN_ROT = 0.026; // radians (~1.5 deg)
+// Conservative floor: reject only truly ruined frames until device reports give
+// us real sharpness numbers to calibrate against.
+const KF_BLUR_MIN = 3;
+
+let inAr = false;
+let kfCount = 0;
+let kfSending = false;
+let kfLastMs = 0;
+let kfLastPos: Vector3 | null = null;
+let kfLastQuat: Quaternion | null = null;
+
+/** Angle between two rotations, in radians. */
+function quatAngle(a: Quaternion, b: Quaternion): number {
+  const dot = Math.min(1, Math.abs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w));
+  return 2 * Math.acos(dot);
+}
+
+function resetKeyframes() {
+  kfLastPos = null;
+  kfLastQuat = null;
+  kfLastMs = 0;
+}
+
+async function maybeKeyframe() {
+  if (!inAr || kfSending) return;
+  const cam = scene.activeCamera;
+  if (!cam) return;
+  const now = performance.now();
+  if (now - kfLastMs < KF_MIN_INTERVAL_MS) return;
+
+  const scale = new Vector3();
+  const quat = new Quaternion();
+  const pos = new Vector3();
+  cam.getWorldMatrix().decompose(scale, quat, pos);
+
+  let reason: "first" | "move" | "rotate" | "both" = "first";
+  if (kfLastPos && kfLastQuat) {
+    const moved = Vector3.Distance(pos, kfLastPos) > KF_MIN_MOVE;
+    const rotated = quatAngle(quat, kfLastQuat) > KF_MIN_ROT;
+    if (!moved && !rotated) return;
+    reason = moved && rotated ? "both" : moved ? "move" : "rotate";
+  }
+
+  kfSending = true;
+  try {
+    const frame = await grabFrame();
+    if (!frame) return;
+    if (frame.sharpness < KF_BLUR_MIN) {
+      log(`keyframe skipped: blurry (lap=${frame.sharpness.toFixed(1)})`);
+      return;
+    }
+    kfCount++;
+    kfLastMs = now;
+    kfLastPos = pos.clone();
+    kfLastQuat = quat.clone();
+    gateway.sendReconFrame({
+      frameId: `${sessionId}-kf${kfCount}`,
+      position: [pos.x, pos.y, pos.z],
+      quaternion: [quat.x, quat.y, quat.z, quat.w],
+      fovDeg: frame.fovDeg,
+      width: frame.width,
+      height: frame.height,
+      image: frame.base64,
+      reason,
+      sharpness: frame.sharpness,
+    });
+    log(
+      `keyframe #${kfCount} (${reason}) ${frame.width}x${frame.height} ` +
+        `lap=${frame.sharpness.toFixed(0)}`,
+    );
+  } catch (e) {
+    diag.error("keyframe", e);
+  } finally {
+    kfSending = false;
   }
 }
 
@@ -407,6 +532,8 @@ async function enterAr() {
     });
     startOverlay.style.display = "none";
     hud.style.display = "block";
+    inAr = true;
+    resetKeyframes();
     const session = xr.baseExperience.sessionManager.session;
     scanBtn.disabled = false; // scanning works without a hit (default depth)
     try {
@@ -427,7 +554,10 @@ async function enterAr() {
     session.addEventListener("end", () => {
       hud.style.display = "none";
       startOverlay.style.display = "flex";
-      log("session ended");
+      inAr = false;
+      resetKeyframes();
+      log(`session ended after ${kfCount} keyframe(s)`);
+      diag.info("keyframes", kfCount);
       void diag.send("session-end");
     });
     log("entered immersive-ar");
@@ -682,7 +812,8 @@ async function streamPose() {
   if (frameCount % 30 === 0 && placedNodes.length === 0) {
     setStatus(
       `tracking · pos ${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}` +
-        `<br>hit-test: ${lastHitCount > 0 ? "LOCK (" + lastHitCount + ")" : "searching…"}`,
+        `<br>hit-test: ${lastHitCount > 0 ? "LOCK (" + lastHitCount + ")" : "searching…"}` +
+        `<br>keyframes: ${kfCount}`,
     );
   }
 }
@@ -700,6 +831,7 @@ scene.onBeforeRenderObservable.add(() => {
     resolve(frame);
   }
   void streamPose();
+  void maybeKeyframe();
 });
 
 startBtn.addEventListener("click", () => void enterAr());

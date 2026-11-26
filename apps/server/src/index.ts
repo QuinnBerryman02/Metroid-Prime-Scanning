@@ -18,6 +18,9 @@ import type {
   ClientToServer,
   PlaneMsg,
   PoseBroadcastMsg,
+  ReconClearMsg,
+  ReconFrameMsg,
+  ReconKeyframeMsg,
   ScanRequest,
   ScanResult,
   ServerToClient,
@@ -44,6 +47,39 @@ const anchors = new Map<string, AnchorMsg[]>();
 // Latest plane per (session, id), replayed to viewers so a late join sees the
 // environment ARCore has already mapped.
 const planes = new Map<string, Map<number, PlaneMsg>>();
+// MS3.0: accepted keyframes (metadata only) per session, replayed to viewers.
+// Capped so a long session cannot grow without bound.
+const KEYFRAME_REPLAY_MAX = 200;
+const reconKeyframes = new Map<string, ReconKeyframeMsg[]>();
+
+function broadcastReconStatus(sessionId: string) {
+  const list = reconKeyframes.get(sessionId) ?? [];
+  broadcast(
+    {
+      type: "recon_status",
+      sessionId,
+      keyframes: list.length,
+      lastFrameMs: list.at(-1)?.at ?? null,
+    },
+    "viewer",
+  );
+}
+
+/** Hand a keyframe to the inference service. Never block the socket on it. */
+async function forwardReconFrame(msg: ReconFrameMsg) {
+  try {
+    const res = await fetch(`${INFERENCE_URL}/recon/frame`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(msg),
+    });
+    if (!res.ok) {
+      app.log.warn({ status: res.status }, "inference /recon/frame failed");
+    }
+  } catch (e) {
+    app.log.warn({ err: e }, "inference /recon/frame unreachable");
+  }
+}
 
 const app = Fastify({ logger: true, bodyLimit: 20 * 1024 * 1024 });
 await app.register(cors, { origin: true });
@@ -68,6 +104,30 @@ app.get("/health", async () => ({
 }));
 
 app.get("/world", async () => ({ objects: [...world.values()] }));
+
+/**
+ * MS3.0 progress: our own keyframe counters, plus whatever the inference
+ * service reports (proxied, so a viewer only ever talks to the gateway).
+ */
+app.get("/recon/status", async (req) => {
+  const sessions = [...reconKeyframes.entries()].map(([sessionId, list]) => ({
+    sessionId,
+    keyframes: list.length,
+    lastFrameMs: list.at(-1)?.at ?? null,
+  }));
+  let inference: unknown = null;
+  try {
+    const res = await fetch(`${INFERENCE_URL}/recon/status`);
+    if (res.ok) inference = await res.json();
+  } catch (e) {
+    req.log.warn({ err: e }, "inference /recon/status unreachable");
+  }
+  return {
+    total: sessions.reduce((n, s) => n + s.keyframes, 0),
+    sessions,
+    inference,
+  };
+});
 
 /** The wheel's method registry, straight from the inference service. */
 app.get("/methods", async (req, reply) => {
@@ -135,6 +195,7 @@ app.register(async (f) => {
     for (const pose of latestPose.values()) send(socket, pose);
     for (const list of anchors.values()) for (const a of list) send(socket, a);
     for (const list of planes.values()) for (const a of list.values()) send(socket, a);
+    for (const list of reconKeyframes.values()) for (const kf of list) send(socket, kf);
 
     socket.on("message", (raw: Buffer, isBinary: boolean) => {
       if (isBinary) return; // binary frames handled in a later milestone
@@ -179,6 +240,33 @@ app.register(async (f) => {
           broadcast(clear, "viewer");
           break;
         }
+        case "recon_frame": {
+          const list = reconKeyframes.get(msg.sessionId) ?? [];
+          const kf: ReconKeyframeMsg = {
+            type: "recon_keyframe",
+            sessionId: msg.sessionId,
+            frameId: msg.frameId,
+            index: list.length,
+            position: msg.position,
+            quaternion: msg.quaternion,
+            fovDeg: msg.fovDeg,
+            width: msg.width,
+            height: msg.height,
+            sharpness: msg.sharpness,
+            at: Date.now(),
+          };
+          list.push(kf);
+          if (list.length > KEYFRAME_REPLAY_MAX) list.splice(0, list.length - KEYFRAME_REPLAY_MAX);
+          reconKeyframes.set(msg.sessionId, list);
+          app.log.info(
+            { sessionId: msg.sessionId, index: kf.index, reason: msg.reason },
+            "recon keyframe",
+          );
+          broadcast(kf, "viewer");
+          broadcastReconStatus(msg.sessionId);
+          void forwardReconFrame(msg);
+          break;
+        }
         case "plane": {
           const perSession = planes.get(msg.sessionId) ?? new Map<number, PlaneMsg>();
           if (msg.action === "removed") perSession.delete(msg.id);
@@ -202,6 +290,12 @@ app.register(async (f) => {
       clients.delete(socket);
       if (state?.role === "device") {
         latestPose.delete(state.sessionId);
+        if (reconKeyframes.delete(state.sessionId)) {
+          broadcast(
+            { type: "recon_clear", sessionId: state.sessionId } satisfies ReconClearMsg,
+            "viewer",
+          );
+        }
         const perSession = planes.get(state.sessionId);
         if (perSession) {
           for (const p of perSession.values()) {

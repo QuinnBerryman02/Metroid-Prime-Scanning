@@ -115,7 +115,10 @@ Fused reconstruction (the new work):
 - [x] ARCore **planes** streamed device -> gateway -> viewer and rendered as
       coloured polygons (toggle with `P`). This is the `polygon`/`orientation`
       data MS3.3 needs, plus a live sanity check on the shared world frame.
-- [ ] **MS3.0** keyframe streaming (JPEG + pose + intrinsics + ARCore planes).
+- [x] **MS3.0** keyframe streaming: motion/rate/blur-gated captures (≤3 Hz) with
+      pose + fov are sent device -> gateway -> inference; the gateway broadcasts
+      metadata to viewers (breadcrumb frustums) and `GET /recon/status` reports
+      counts. Images ride as base64 JSON (see the protocol note).
 - [ ] **MS3.1** metric scale: affine fit `Z = a·(1/d_rel) + b` from ARCore planes.
 - [ ] **MS3.2** voxel fusion in the ARCore frame; viewer renders the live cloud.
 - [ ] **MS3.3** structure: ARCore + RANSAC planes, excluded from the object pool.

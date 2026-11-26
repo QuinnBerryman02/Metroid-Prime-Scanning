@@ -14,8 +14,9 @@ import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
+import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
-import type { PlaneMsg } from "@metroid-scan/shared";
+import type { PlaneMsg, ReconKeyframeMsg } from "@metroid-scan/shared";
 import { installDebugOverlay, log } from "./lib/debug";
 import { GatewayClient } from "./lib/gateway";
 
@@ -203,6 +204,66 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
+// --- recon keyframes (MS3.0) ------------------------------------------------
+// One small wireframe frustum per streamed keyframe: a breadcrumb trail of
+// where the phone has been, so reconstruction coverage is visible at a glance.
+const KEYFRAME_MAX = 120;
+const keyframeMarkers: TransformNode[] = [];
+let reconKeyframes = 0;
+
+/** A tiny line-list frustum, in the camera's local frame (+z forward). */
+function keyframeFrustum(fovDeg: number, aspect: number, depth = 0.22): Vector3[][] {
+  const halfH = depth * Math.tan(((fovDeg * Math.PI) / 180) / 2);
+  const halfW = halfH * aspect;
+  const o = new Vector3(0, 0, 0);
+  const c = [
+    new Vector3(-halfW, -halfH, depth),
+    new Vector3(halfW, -halfH, depth),
+    new Vector3(halfW, halfH, depth),
+    new Vector3(-halfW, halfH, depth),
+  ];
+  return [
+    [o, c[0]!],
+    [o, c[1]!],
+    [o, c[2]!],
+    [o, c[3]!],
+    [c[0]!, c[1]!],
+    [c[1]!, c[2]!],
+    [c[2]!, c[3]!],
+    [c[3]!, c[0]!],
+  ];
+}
+
+function addKeyframe(msg: ReconKeyframeMsg) {
+  const node = new TransformNode(`kf-${msg.frameId}`, scene);
+  node.position.set(msg.position[0], msg.position[1], msg.position[2]);
+  node.rotationQuaternion = new Quaternion(
+    msg.quaternion[0],
+    msg.quaternion[1],
+    msg.quaternion[2],
+    msg.quaternion[3],
+  );
+  const lines = MeshBuilder.CreateLineSystem(
+    `kf-${msg.frameId}-lines`,
+    { lines: keyframeFrustum(msg.fovDeg, msg.width / Math.max(1, msg.height)) },
+    scene,
+  );
+  lines.color = new Color3(0.62, 0.78, 0.86);
+  lines.alpha = 0.55;
+  lines.isPickable = false;
+  lines.parent = node;
+  keyframeMarkers.push(node);
+  while (keyframeMarkers.length > KEYFRAME_MAX) {
+    keyframeMarkers.shift()!.dispose(false, true);
+  }
+}
+
+function clearKeyframes() {
+  for (const n of keyframeMarkers) n.dispose(false, true);
+  keyframeMarkers.length = 0;
+  reconKeyframes = 0;
+}
+
 const gateway = new GatewayClient("viewer", sessionId, {
   onStatus: (s) => {
     log(`ws ${s}`);
@@ -226,6 +287,11 @@ const gateway = new GatewayClient("viewer", sessionId, {
   onSession: (msg) => log(`session ${msg.status}: ${msg.sessionId}`),
   onWorld: (msg) => log(`world: ${msg.added.length} objects`),
   onPlane: (msg) => renderPlane(msg),
+  onReconKeyframe: (msg) => addKeyframe(msg),
+  onReconStatus: (msg) => {
+    reconKeyframes = msg.keyframes;
+  },
+  onReconClear: () => clearKeyframes(),
   onAnchor: (msg) => {
     const [sx, sy, sz] = msg.size;
     let mesh = anchorMeshes.get(msg.id);
@@ -279,6 +345,7 @@ setInterval(() => {
       `tracking · ${poseCount} poses\n` +
       `pos ${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}\n` +
       `${planeMeshes.size} plane(s)${planesVisible ? "" : " (hidden, P)"}\n` +
+      `${reconKeyframes} keyframe(s)\n` +
       `${anchorMeshes.size} anchor(s)`;
   }
 }, 250);

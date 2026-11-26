@@ -103,3 +103,37 @@ class ScanRequest(BaseModel):
     method: str = "yolo"
     # Horizontal FOV in degrees; falls back to the server default when omitted.
     fovDeg: float | None = None
+
+
+# ---------------------------------------------------------------------------
+# MS3.0 - reconstruction keyframes (docs/RECONSTRUCTION.md)
+# ---------------------------------------------------------------------------
+
+
+class ReconFrameRequest(BaseModel):
+    """One streamed reconstruction keyframe. `image` is base64 JPEG."""
+
+    sessionId: str = ""
+    frameId: str = ""
+    # Camera world pose at the capture instant (ARCore `local` frame).
+    position: list[float] = Field(default_factory=list)
+    quaternion: list[float] = Field(default_factory=list)
+    fovDeg: float = 60.0
+    width: int = 0
+    height: int = 0
+    image: str = ""
+    reason: str = ""
+    sharpness: float = 0.0
+
+
+class ReconStatusResponse(BaseModel):
+    keyframes: int = 0
+    sessions: dict[str, int] = Field(default_factory=dict)
+    lastFrameId: str | None = None
+    lastJpegBytes: int = 0
+    lastMs: float | None = None
+
+
+class ReconFrameResponse(BaseModel):
+    ok: bool = True
+    keyframes: int = 0

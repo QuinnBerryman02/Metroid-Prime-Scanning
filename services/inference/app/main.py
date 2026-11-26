@@ -44,7 +44,17 @@ from .lifting import (
     unproject_mask,
 )
 from .methods import METHODS, METHOD_SPECS, Segmenter, describe, device_for
-from .schemas import Aimed, DepthResult, Detection, Obb, ScanRequest, ScanResponse
+from .schemas import (
+    Aimed,
+    DepthResult,
+    Detection,
+    Obb,
+    ReconFrameRequest,
+    ReconFrameResponse,
+    ReconStatusResponse,
+    ScanRequest,
+    ScanResponse,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("inference")
@@ -197,6 +207,70 @@ def methods() -> dict[str, Any]:
         "device": config.DEVICE,
         "methods": [describe(spec) for spec in METHOD_SPECS],
     }
+
+
+# ---------------------------------------------------------------------------
+# MS3.0 - reconstruction keyframes (docs/RECONSTRUCTION.md)
+# ---------------------------------------------------------------------------
+
+
+def _recon_state() -> dict[str, Any]:
+    return state.setdefault("recon", {"keyframes": 0, "sessions": {}, "last": None})
+
+
+@app.post("/recon/frame", response_model=ReconFrameResponse)
+def recon_frame(req: ReconFrameRequest) -> ReconFrameResponse:
+    """Accept a streamed keyframe.
+
+    MS3.0 only counts and validates it - MS3.2 adds the depth + fusion stage.
+    """
+    rs = _recon_state()
+    rs["keyframes"] += 1
+    sessions: dict[str, int] = rs["sessions"]
+    sessions[req.sessionId] = sessions.get(req.sessionId, 0) + 1
+
+    jpeg_bytes = 0
+    if req.image:
+        try:
+            jpeg_bytes = len(base64.b64decode(req.image, validate=True))
+        except (binascii.Error, ValueError):
+            log.warning("keyframe %s: bad base64 image", req.frameId)
+    rs["last"] = {
+        "frameId": req.frameId,
+        "sessionId": req.sessionId,
+        "width": req.width,
+        "height": req.height,
+        "fovDeg": req.fovDeg,
+        "sharpness": req.sharpness,
+        "jpegBytes": jpeg_bytes,
+        "at": time.time() * 1000,
+    }
+    n = rs["keyframes"]
+    if n % 10 == 1:
+        log.info(
+            "keyframe %d (%s) %dx%d %.1f kB lap=%.0f [%s]",
+            n,
+            req.reason or "?",
+            req.width,
+            req.height,
+            jpeg_bytes / 1024,
+            req.sharpness,
+            req.sessionId,
+        )
+    return ReconFrameResponse(keyframes=n)
+
+
+@app.get("/recon/status", response_model=ReconStatusResponse)
+def recon_status() -> ReconStatusResponse:
+    rs = state.get("recon") or {"keyframes": 0, "sessions": {}, "last": None}
+    last = rs.get("last") or {}
+    return ReconStatusResponse(
+        keyframes=rs["keyframes"],
+        sessions=rs["sessions"],
+        lastFrameId=last.get("frameId"),
+        lastJpegBytes=last.get("jpegBytes", 0),
+        lastMs=last.get("at"),
+    )
 
 
 @app.post("/scan", response_model=ScanResponse)

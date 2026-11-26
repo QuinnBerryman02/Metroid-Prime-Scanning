@@ -205,6 +205,66 @@ export interface AnchorClearMsg {
   sessionId: string;
 }
 
+// ---------------------------------------------------------------------------
+// MS3.0 - reconstruction keyframes (docs/RECONSTRUCTION.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * Device -> server: one streamed reconstruction keyframe.
+ *
+ * The camera image rides along as base64 (like `/scan`). At ~3 Hz on a LAN the
+ * 33% overhead is irrelevant and every hop stays plain JSON. If the keyframe
+ * rate ever climbs, swap the body for a binary WS message keyed by frameId.
+ */
+export interface ReconFrameMsg {
+  type: "recon_frame";
+  sessionId: string;
+  frameId: string;
+  /** Camera world pose at the capture instant (ARCore `local` frame). */
+  position: Vec3;
+  quaternion: Quat;
+  /** Horizontal FOV in degrees, from the XR projection matrix. */
+  fovDeg: number;
+  width: number;
+  height: number;
+  /** base64 JPEG (no data-URI prefix). */
+  image: string;
+  /** Why this frame qualified (debug). */
+  reason: "first" | "move" | "rotate" | "both";
+  /** Laplacian variance of the greyscale frame (higher = sharper). */
+  sharpness: number;
+}
+
+/** Server -> viewer: a keyframe was accepted (metadata only - no pixels). */
+export interface ReconKeyframeMsg {
+  type: "recon_keyframe";
+  sessionId: string;
+  frameId: string;
+  /** 0-based index within the session. */
+  index: number;
+  position: Vec3;
+  quaternion: Quat;
+  fovDeg: number;
+  width: number;
+  height: number;
+  sharpness: number;
+  at: number;
+}
+
+/** Server -> any: reconstruction progress for a session. */
+export interface ReconStatusMsg {
+  type: "recon_status";
+  sessionId: string;
+  keyframes: number;
+  lastFrameMs: number | null;
+}
+
+/** Server -> viewer: drop all keyframe markers for a session. */
+export interface ReconClearMsg {
+  type: "recon_clear";
+  sessionId: string;
+}
+
 /**
  * Device -> server -> viewer: one ARCore-detected plane (the free environment
  * model WebXR hands us - polygon is in world/Babylon space, metres).
@@ -265,7 +325,8 @@ export type ClientToServer =
   | PoseMsg
   | AnchorMsg
   | AnchorClearMsg
-  | PlaneMsg;
+  | PlaneMsg
+  | ReconFrameMsg;
 export type ServerToClient =
   | WorldDeltaMsg
   | ScanResultMsg
@@ -273,6 +334,9 @@ export type ServerToClient =
   | AnchorMsg
   | AnchorClearMsg
   | PlaneMsg
+  | ReconKeyframeMsg
+  | ReconStatusMsg
+  | ReconClearMsg
   | SessionEventMsg
   | ErrorMsg;
 
