@@ -101,8 +101,8 @@
       #replay select, #replay button, #replay input[type="number"] { font: inherit;
         padding: 6px 8px; border-radius: 7px; border: 1px solid var(--field-border);
         background: var(--field-alt); color: var(--on-panel); max-width: 42ch; }
-      #maxFrames { width: 6ch; }
-      #framesLabel { color: var(--dim); }
+      #fromFrame, #toFrame { width: 5ch; }
+      #framesLabel, #framesTo { color: var(--dim); }
       #replayProgress { display: flex; gap: 8px; align-items: center;
         border-top: 1px solid var(--border); padding-top: 6px; }
       #replayProgress[hidden] { display: none; }
@@ -125,11 +125,13 @@
         <select id="logSelect"></select>
         <button id="replayBtn">Replay</button>
         <button id="stopBtn">Stop</button>
-        <label id="framesLabel" for="maxFrames"
-          title="replay only the first N keyframes - 1 shows a single frame; blank plays the whole run">
+        <label id="framesLabel" for="fromFrame"
+          title="keyframes to replay, 1-based and inclusive: from 7 to 7 plays frame 7 alone, from 7 to the end plays 7 onwards, blank plays the whole run">
           frames
         </label>
-        <input id="maxFrames" type="number" min="0" step="1" placeholder="all" />
+        <input id="fromFrame" type="number" min="1" step="1" placeholder="1" />
+        <span id="framesTo">&ndash;</span>
+        <input id="toFrame" type="number" min="0" step="1" placeholder="end" />
       </div>
       <div id="replayProgress" hidden>
         <span id="replayProgressText"></span>

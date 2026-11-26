@@ -71,9 +71,13 @@ def main() -> int:
     ap.add_argument("--scale-a", type=float, default=None, help="with --scale-mode fixed")
     ap.add_argument("--fov", type=float, default=None, help="override fovDeg")
     ap.add_argument("--session-suffix", default="-replay")
+    ap.add_argument("--from", dest="frame_from", type=int, default=1,
+                    help="first frame to replay, 1-based (default 1)")
+    ap.add_argument("--to", dest="frame_to", type=int, default=0,
+                    help="last frame to replay, 1-based and inclusive "
+                         "(0 = to the end). `--from 7 --to 7` plays frame 7 alone")
     ap.add_argument("--max", type=int, default=0,
-                    help="replay only the first N frames (0 = all); 1 is the "
-                         "quickest way to look at a single frame's geometry")
+                    help="alias for --to; kept for older invocations")
     args = ap.parse_args()
 
     d = LOG_DIR / args.session
@@ -84,9 +88,16 @@ def main() -> int:
     if not frames:
         print(f"no frames in {d}")
         return 1
-    if args.max > 0:
-        print(f"limiting to the first {args.max} of {len(frames)} frames")
-        frames = frames[: args.max]
+    total = len(frames)
+    start = max(1, args.frame_from) - 1
+    end = args.frame_to or args.max or total
+    if start >= total:
+        print(f"--from {args.frame_from} is past the end ({total} frames)")
+        return 1
+    end = min(end, total)
+    frames = frames[start : max(end, start + 1)]
+    if len(frames) != total:
+        print(f"frames {start + 1}-{start + len(frames)} of {total}")
     print(f"{len(frames)} frames from {d.name}\n")
 
     base = json.loads(frames[0].read_text(encoding="utf-8"))

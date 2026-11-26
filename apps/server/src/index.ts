@@ -297,7 +297,8 @@ async function startReplay(
   intervalMs: number,
   method: string,
   params: Record<string, number | string | boolean>,
-  maxFrames: number,
+  from: number,
+  to: number,
 ): Promise<number> {
   stopReplay?.();
   let stopped = false;
@@ -309,7 +310,12 @@ async function startReplay(
   const all = (await readdir(dir)).filter((f) => f.endsWith(".json")).sort();
   // maxFrames=1 replays only the first keyframe, which is how you look at one
   // frame's geometry without waiting out the whole walk. 0 means all of them.
-  const files = maxFrames > 0 ? all.slice(0, maxFrames) : all;
+  // `from`/`to` are 1-based and inclusive, so from=to=7 plays frame 7 alone.
+  // `to` of 0 means "to the end". Clamped so a stale value cannot yield an
+  // empty slice that looks like the recording is broken.
+  const start = Math.min(Math.max(1, from), all.length) - 1;
+  const end = to > 0 ? Math.min(to, all.length) : all.length;
+  const files = all.slice(start, Math.max(end, start + 1));
 
   // A brand new session id for every run. Reusing one (it used to be just
   // `replay-<session>`) meant the inference kept the previous run's *map* and
@@ -323,12 +329,15 @@ async function startReplay(
   const progress = (
     index: number,
     state: ReconReplayMsg["state"],
+    label?: string,
   ): ReconReplayMsg => ({
     type: "recon_replay",
     sessionId: replayId,
     source: session,
     index,
     total: files.length,
+    from: start + 1,
+    label,
     state,
   });
 
@@ -394,7 +403,10 @@ async function startReplay(
       } catch (e) {
         app.log.warn({ file, err: e }, "replay frame failed");
       }
-      broadcast(progress(i + 1, stopped ? "stopped" : "running"), "viewer");
+      broadcast(
+        progress(i + 1, stopped ? "stopped" : "running", file.replace(/\.json$/, "")),
+        "viewer",
+      );
       await new Promise((r) => setTimeout(r, intervalMs));
     }
     broadcast(progress(files.length, stopped ? "stopped" : "done"), "viewer");
@@ -410,7 +422,11 @@ app.post("/recon/replay", async (req, reply) => {
         intervalMs?: number;
         method?: string;
         params?: Record<string, number | string | boolean>;
-        /** 0 or absent = every frame. 1 = only the first. */
+        /** 1-based, inclusive. from=7&to=7 plays frame 7 alone. */
+        from?: number;
+        /** 1-based, inclusive. 0 or absent = to the end. */
+        to?: number;
+        /** Kept for callers written before the range: equivalent to `to`. */
         maxFrames?: number;
       }
     | undefined;
@@ -425,8 +441,12 @@ app.post("/recon/replay", async (req, reply) => {
   }
   // Clamp: a huge value would just be the whole recording, but a negative or
   // NaN one must not silently become "all".
-  const raw = Number(body?.maxFrames ?? 0);
-  const maxFrames = Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 0;
+  const num = (v: unknown, fallback: number): number => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : fallback;
+  };
+  const from = Math.max(1, num(body?.from, 1));
+  const to = num(body?.to ?? body?.maxFrames, 0);
 
   let played: number;
   try {
@@ -435,7 +455,8 @@ app.post("/recon/replay", async (req, reply) => {
       body?.intervalMs ?? REPLAY_INTERVAL_MS,
       body?.method ?? "voxel",
       body?.params ?? {},
-      maxFrames,
+      from,
+      to,
     );
   } catch (e) {
     reply.code(404);
@@ -446,6 +467,8 @@ app.post("/recon/replay", async (req, reply) => {
     session,
     method: body?.method ?? "voxel",
     frames: played,
+    from,
+    to,
   };
 });
 

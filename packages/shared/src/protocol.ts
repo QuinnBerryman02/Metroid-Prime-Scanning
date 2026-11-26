@@ -298,6 +298,10 @@ export interface ReconReplayMsg {
   index: number;
   /** Frames this run will send in total. */
   total: number;
+  /** 1-based index of the first frame in the slice, so "frame 7" is readable. */
+  from: number;
+  /** Name of the frame just sent (e.g. "0007"). */
+  label?: string;
   state: "running" | "done" | "stopped";
 }
 

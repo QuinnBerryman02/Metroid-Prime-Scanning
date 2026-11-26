@@ -456,8 +456,13 @@ const gateway = new GatewayClient("viewer", sessionId, {
     replayBar.value = msg.index;
     if (msg.state === "running") {
       if (msg.index === 0) replayClouds = 0;
-      replayProgressText.textContent =
-        `replaying ${msg.source.slice(0, 8)}\u2026 ${msg.index}/${msg.total}`;
+      // A single-frame run says which frame, since that is the whole point of
+      // picking a range - otherwise "1/1" tells you nothing about frame 7.
+      const where =
+        msg.total === 1
+          ? `frame ${msg.label ?? msg.from}`
+          : `${msg.index}/${msg.total}`;
+      replayProgressText.textContent = `replaying ${msg.source.slice(0, 8)}\u2026 ${where}`;
       window.clearTimeout(replayHideTimer);
       return;
     }
@@ -568,7 +573,8 @@ const logSelect = document.getElementById("logSelect") as HTMLSelectElement;
 const replayBtn = document.getElementById("replayBtn") as HTMLButtonElement;
 const stopBtn = document.getElementById("stopBtn") as HTMLButtonElement;
 const replayHint = document.getElementById("replayHint")!;
-const maxFramesInput = document.getElementById("maxFrames") as HTMLInputElement;
+const fromFrameInput = document.getElementById("fromFrame") as HTMLInputElement;
+const toFrameInput = document.getElementById("toFrame") as HTMLInputElement;
 const replayProgress = document.getElementById("replayProgress")!;
 const replayProgressText = document.getElementById("replayProgressText")!;
 const replayBar = document.getElementById("replayBar") as HTMLProgressElement;
@@ -817,21 +823,26 @@ replayBtn.addEventListener("click", () => {
   const method = methodSelect.value;
   const params = collectParams();
   updateAlgoSummary();
-  // Blank or 0 means the whole run; 1 means just the first keyframe.
-  const maxFrames = Math.max(0, Math.floor(Number(maxFramesInput.value) || 0));
+  // 1-based and inclusive. Both blank = the whole run; 7..7 = frame 7 alone.
+  const from = Math.max(1, Math.floor(Number(fromFrameInput.value) || 1));
+  const to = Math.max(0, Math.floor(Number(toFrameInput.value) || 0));
+  const range = from === 1 && to === 0 ? "all frames" : `frames ${from}-${to || "end"}`;
   void fetch("/api/recon/replay", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ session, method, params, maxFrames }),
+    body: JSON.stringify({ session, method, params, from, to }),
   })
-    .then((r) =>
-      r.ok
-        ? log(
-            `replaying ${session}${maxFrames ? ` (first ${maxFrames})` : ""} ` +
-              `with ${method} ${JSON.stringify(params)}`,
-          )
-        : log(`replay failed ${r.status} for ${session}`),
-    )
+    .then(async (r) => {
+      if (!r.ok) {
+        log(`replay failed ${r.status} for ${session}`);
+        return;
+      }
+      const j = (await r.json()) as { frames?: number };
+      log(
+        `replaying ${session} (${range}, ${j.frames ?? "?"} frame(s)) ` +
+          `with ${method} ${JSON.stringify(params)}`,
+      );
+    })
     .catch((e) => void explainFetchFailure(e).then(log));
 });
 stopBtn.addEventListener("click", () => {
