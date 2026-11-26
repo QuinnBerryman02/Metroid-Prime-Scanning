@@ -374,7 +374,18 @@ function disposeCloud() {
   cloudScale = "";
 }
 
+/** Solid voxel view or plain points - `V`, remembered, solid by default. */
+let solidCloud = true;
+try {
+  const saved = localStorage.getItem("viewer.solidCloud");
+  if (saved !== null) solidCloud = saved === "1";
+} catch {
+  /* ignore */
+}
+let lastCloudMsg: ReconCloudMsg | null = null;
+
 function renderCloud(msg: ReconCloudMsg) {
+  lastCloudMsg = msg;
   if (!msg.count) {
     disposeCloud();
     return;
@@ -391,6 +402,19 @@ function renderCloud(msg: ReconCloudMsg) {
     colors[i * 4 + 3] = 1;
   }
 
+  cloudMesh?.dispose();
+  cloudMesh = solidCloud
+    ? buildVoxelBlocks(positions, colors, msg)
+    : buildPointCloud(positions, colors);
+  cloudPoints = msg.count;
+  cloudVoxels = msg.voxels;
+  cloudScale =
+    `${msg.method ?? "?"}${msg.note ? ` (${msg.note})` : ""} · ` +
+    `${msg.scaleMethod} a=${msg.scaleA.toFixed(3)} b=${msg.scaleB.toFixed(3)}`;
+}
+
+/** The original look: one unlit vertex-coloured point per sample. */
+function buildPointCloud(positions: Float32Array, colors: Float32Array): Mesh {
   const mesh = new Mesh("cloud", scene);
   const vd = new VertexData();
   vd.positions = new Float32Array(positions); // copy: the source buffer is reused
@@ -399,14 +423,51 @@ function renderCloud(msg: ReconCloudMsg) {
   mesh.material = cloudMaterial;
   mesh.useVertexColors = true;
   mesh.isPickable = false;
+  return mesh;
+}
 
-  cloudMesh?.dispose();
-  cloudMesh = mesh;
-  cloudPoints = msg.count;
-  cloudVoxels = msg.voxels;
-  cloudScale =
-    `${msg.method ?? "?"}${msg.note ? ` (${msg.note})` : ""} · ` +
-    `${msg.scaleMethod} a=${msg.scaleA.toFixed(3)} b=${msg.scaleB.toFixed(3)}`;
+/**
+ * The same samples drawn as solid voxel cubes.
+ *
+ * A point cloud of a room reads as a haze: you cannot tell a surface from a
+ * scatter, and there is no sense of near/far. Filling each sample out to the
+ * voxel it represents makes the surface actually visible, which is the only
+ * way to judge whether the geometry is right.
+ *
+ * One box mesh plus thin instances, so 30k cubes is still one draw call - a
+ * MeshBuilder.CreateBox per sample would lock the tab up.
+ */
+function buildVoxelBlocks(
+  positions: Float32Array,
+  colors: Float32Array,
+  msg: ReconCloudMsg,
+): Mesh {
+  const n = msg.count;
+  const size = Math.min(Math.max(msg.voxel || 0.05, 0.01), 0.5);
+  const box = MeshBuilder.CreateBox("cloud-voxels", { size }, scene);
+  box.material = cloudMaterial;
+  box.useVertexColors = true;
+  box.isPickable = false;
+
+  // Column-major 4x4 with the translation in elements 12..14, so this is a
+  // translation-only matrix per instance without allocating 30k Matrix objects.
+  const matrices = new Float32Array(n * 16);
+  for (let i = 0; i < n; i++) {
+    const o = i * 16;
+    matrices[o] = 1;
+    matrices[o + 5] = 1;
+    matrices[o + 10] = 1;
+    matrices[o + 15] = 1;
+    matrices[o + 12] = positions[i * 3] ?? 0;
+    matrices[o + 13] = positions[i * 3 + 1] ?? 0;
+    matrices[o + 14] = positions[i * 3 + 2] ?? 0;
+  }
+  box.thinInstanceSetBuffer("matrix", matrices, 16, true);
+  // Babylon picks "color" up as the per-instance colour when the material
+  // uses vertex colours; if a future version stops doing that the blocks come
+  // out uniformly tinted rather than invisible.
+  box.thinInstanceSetBuffer("color", colors, 4, true);
+  return box;
 }
 
 const gateway = new GatewayClient("viewer", sessionId, {
@@ -557,7 +618,8 @@ setInterval(() => {
             `total ${(reconTiming.total ?? 0).toFixed(0)}ms`
           : "",
         `${anchorMeshes.size} anchor(s)`,
-        `wheel / +/- zoom \u00b7 arrows orbit \u00b7 P planes \u00b7 B background \u00b7 A algorithms`,
+        `wheel / +/- zoom \u00b7 arrows orbit \u00b7 P planes \u00b7 B background ` +
+          `\u00b7 V ${solidCloud ? "solid->points" : "points->solid"} \u00b7 A algorithms`,
       ]
         .filter(Boolean)
         .join("\n"),
@@ -880,6 +942,21 @@ window.addEventListener("keydown", (e) => {
     BACKGROUND_ORDER[next % BACKGROUND_ORDER.length] ?? "grey",
   );
   log(`background: ${backgroundId} (B to change)`);
+});
+
+// --- solid vs points ----------------------------------------------------
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "v" && e.key !== "V") return;
+  const t = e.target as HTMLElement | null;
+  if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
+  solidCloud = !solidCloud;
+  try {
+    localStorage.setItem("viewer.solidCloud", solidCloud ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+  log(`cloud: ${solidCloud ? "solid voxels" : "points"} (V to change)`);
+  if (lastCloudMsg) renderCloud(lastCloudMsg);
 });
 
 engine.runRenderLoop(() => scene.render());

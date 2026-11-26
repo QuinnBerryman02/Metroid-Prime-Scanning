@@ -469,6 +469,13 @@ def _fuse_keyframe(
         # surface and wrong further out - the exact thing `hit` gets wrong.
         fresh = ScaleFit(hit_scale, params["scaleB"], 0, 0.0, "hit")
         source = "hit-test"
+        # Deliberately per-frame, bypassing ScaleTracker. The frame-to-frame
+        # variation in hit/rel is not noise to be smoothed away - it *is* the
+        # depth model's per-frame scale drift, and a running median removes
+        # precisely the signal this mode exists to follow. A constant `a` can
+        # only ever be a compromise between frames; this is the mode that
+        # tracks them.
+        exact = True
     elif scale_mode == "fixed":
         fresh = ScaleFit(params["scaleA"], params["scaleB"], 0, 0.0, "fixed")
         source, exact = "fixed", True
