@@ -42,6 +42,9 @@ const sessionId = crypto.randomUUID();
 const RATE = 66;
 const SCAN_METHOD = "yolo"; // fast, iGPU; swap to "sam2" for the best mask
 const MAX_EDGE = 640;
+// If the hit-test finds no surface we still allow scanning, assuming the object
+// is this far away (docs/LIFTING.md section 4 option 4: fixed fallback).
+const DEFAULT_DISTANCE = 1.5;
 
 // --- DOM --------------------------------------------------------------------
 const canvas = document.getElementById("app") as HTMLCanvasElement;
@@ -95,6 +98,7 @@ let xr: WebXRDefaultExperience | null = null;
 let hitTest: WebXRHitTest | null = null;
 let anchorSystem: WebXRAnchorSystem | null = null;
 let currentHit: { position: Vector3; quaternion: Quaternion } | null = null;
+let lastHitCount = -1;
 let frameCount = 0;
 let lastPoseSend = 0;
 let anchorCount = 0;
@@ -273,6 +277,11 @@ async function setupXr() {
   log(`hit-test: ${hitTest ? "on" : "OFF"} | anchors: ${anchorSystem ? "on" : "OFF"}`);
 
   hitTest?.onHitTestResultObservable.add((results) => {
+    const n = results.length;
+    if (n !== lastHitCount) {
+      lastHitCount = n;
+      log(`hit-test: ${n} result(s)`);
+    }
     const r = results[0];
     if (r) {
       reticle.isVisible = true;
@@ -282,11 +291,9 @@ async function setupXr() {
         position: r.position.clone(),
         quaternion: r.rotationQuaternion.clone(),
       };
-      scanBtn.disabled = false;
     } else {
       reticle.isVisible = false;
       currentHit = null;
-      scanBtn.disabled = true;
     }
   });
 }
@@ -301,6 +308,7 @@ async function enterAr() {
     startOverlay.style.display = "none";
     hud.style.display = "block";
     const session = xr.baseExperience.sessionManager.session;
+    scanBtn.disabled = false; // scanning works without a hit (default depth)
     const enabled =
       (session as unknown as { enabledFeatures?: string[] }).enabledFeatures ?? [];
     diag.info("session.enabledFeatures", enabled);
@@ -370,17 +378,16 @@ function obbEdges(): [number, number][] {
 async function scanAndAnchor() {
   const sm = xr?.baseExperience?.sessionManager;
   if (!sm || !anchorSystem) return;
-  if (!currentHit) {
-    setStatus("no surface under the reticle");
-    return;
-  }
   const camera = scene.activeCamera;
   if (!camera) return;
 
-  const hitPos = currentHit.position.clone();
   const camPos = camera.globalPosition.clone();
-  const distance = Vector3.Distance(hitPos, camPos);
   const basis = cameraBasis(camera);
+  const hitPos = currentHit?.position.clone() ?? null;
+  const distance = hitPos ? Vector3.Distance(hitPos, camPos) : DEFAULT_DISTANCE;
+  diag.info("scan.hitTest", hitPos ? "hit" : "miss");
+  diag.info("scan.distance", distance);
+  diag.info("scan.hitTestResults", lastHitCount);
 
   setStatus("capturing…");
   const frame = await grabFrame();
@@ -540,9 +547,20 @@ async function streamPose() {
     "tracked",
   );
   frameCount++;
+  if (frameCount % 120 === 0) {
+    const ht = hitTest as unknown as {
+      _xrHitTestSource?: unknown;
+      _transientXrHitTestSource?: unknown;
+    } | null;
+    log(
+      `hb f=${frameCount} perm=${ht?._xrHitTestSource ? "y" : "n"} ` +
+        `trans=${ht?._transientXrHitTestSource ? "y" : "n"} hits=${lastHitCount}`,
+    );
+  }
   if (frameCount % 30 === 0 && placedNodes.length === 0) {
     setStatus(
-      `tracking · pos ${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}`,
+      `tracking · pos ${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)}` +
+        `<br>hit-test: ${lastHitCount > 0 ? "LOCK (" + lastHitCount + ")" : "searching…"}`,
     );
   }
 }
