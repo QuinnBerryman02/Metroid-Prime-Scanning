@@ -24,7 +24,7 @@ from app.fusion import (  # noqa: E402
     unproject_depth,
 )
 
-A_TRUE = 1.0  # we pretend rel_depth = Z / A_TRUE
+A_TRUE = 1.0  # we pretend 1/Z = A_TRUE * disp
 I4 = np.eye(4)
 
 pil = Image.open("samples/bus.jpg").convert("RGB")
@@ -35,11 +35,11 @@ fx, fy, cx, cy = intr
 est = DepthEstimator(
     config.DEPTH_MODEL, config.DEPTH_DEVICE, config.DEPTH_IR, config.EXPORT_OPENVINO
 )
-rel = est.predict_depth(pil)
+rel = est.predict(pil)  # raw disparity, as the recon path uses
 rel = cv2.medianBlur(rel, 5)
 print(f"rel_depth {rel.shape} range {rel.min():.3f}..{rel.max():.3f} dtype {rel.dtype}")
 
-Z = A_TRUE * rel
+Z = 1.0 / (A_TRUE * rel)  # pseudo-truth in the 1/Z = a*disp model
 
 
 def quad(u0, u1, v0, v1):

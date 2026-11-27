@@ -16,6 +16,12 @@
 
       /* DOM overlay shown over the camera during the AR session */
       #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+      #objectInfo { position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%);
+        width: min(88vw, 360px); padding: 12px 14px; pointer-events: auto; color: #e8f4ee;
+        background: rgba(12, 18, 22, 0.9); border: 2px solid #3bff7a; border-radius: 10px; }
+      #objectInfo[hidden] { display: none; }
+      #objectInfo strong { font-size: 1.2em; color: #3bff7a; }
+      #objectInfo p { margin: 6px 0 0; font-size: 0.9em; color: #b8c7bf; }
       #reticle { position: absolute; left: 50%; top: 50%; width: 46px; height: 46px;
         margin: -23px 0 0 -23px; border: 2px solid rgba(124,247,196,.85);
         border-radius: 50%; }
@@ -53,6 +59,7 @@
       <div id="status">booting…</div>
       <pre id="debug"></pre>
       <div id="reticle"></div>
+      <div id="objectInfo" hidden></div>
       <div id="controls">
         <button id="keyBtn" disabled>Key</button>
         <button id="scanBtn" disabled>Scan</button>

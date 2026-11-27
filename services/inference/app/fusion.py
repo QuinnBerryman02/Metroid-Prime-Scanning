@@ -49,16 +49,32 @@ def transform_points(m: np.ndarray, pts: np.ndarray) -> np.ndarray:
 
 @dataclass
 class ScaleFit:
-    """Z_metres ~= a * rel_depth + b."""
+    """Inverse depth ~= a * disparity + b, i.e. Z_metres = 1 / (a*disp + b).
+
+    `rel` everywhere in the recon path is the model's raw disparity (Depth
+    Anything V2 output). Depth Anything is affine-invariant *in disparity*:
+    disp = p/Z + q with unknown per-image p and q. That makes 1/Z linear in
+    disp, so this is the family that can absorb the shift q. The old model
+    Z = a/disp + b (fit on 1/disp) cannot, and warps near vs far.
+    """
 
     a: float
     b: float
     samples: int
-    rms: float
+    rms: float  # metres
     method: str  # "affine" | "scale" | "cached"
 
-    def depth(self, rel: np.ndarray) -> np.ndarray:
-        return self.a * rel + self.b
+    def depth(self, disp: np.ndarray) -> np.ndarray:
+        if self.method == "metric":
+            return disp  # already metres from a metric model
+        return inv_depth_to_depth(self.a * disp + self.b)
+
+
+def inv_depth_to_depth(inv: np.ndarray) -> np.ndarray:
+    """1/Z with non-positive inverse depth mapped to +inf (rejected later)."""
+    inv = np.asarray(inv, dtype=np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(inv > 1e-9, 1.0 / inv, np.inf)
 
 
 def _plane_samples(polygon: np.ndarray, n: int = 24) -> np.ndarray:
@@ -77,11 +93,13 @@ def _plane_samples(polygon: np.ndarray, n: int = 24) -> np.ndarray:
 
 
 def _scale_only(d: np.ndarray, z: np.ndarray) -> ScaleFit | None:
-    """Assume the model has no offset: Z = a*rel."""
-    a = float(np.median(z / d))
+    """Assume no disparity shift: 1/Z = a*disp."""
+    inv = 1.0 / z
+    a = float(np.median(inv / d))
     if not np.isfinite(a) or a <= 0:
         return None
-    return ScaleFit(a, 0.0, int(d.size), float(np.std(z - a * d)), "scale")
+    rms = float(np.std(z - inv_depth_to_depth(a * d)))
+    return ScaleFit(a, 0.0, int(d.size), rms, "scale")
 
 
 def fit_metric_scale(
@@ -93,9 +111,9 @@ def fit_metric_scale(
 ) -> ScaleFit | None:
     """Fit the relative depth to ARCore's metric planes.
 
-    For a sample point on a plane we know its true metric depth `Z` (it is the
-    camera-space z of the point) and the model's `rel_depth` at the pixel it
-    projects to. Least-squares `Z = a*rel + b`, with outlier rejection.
+    For a sample point on a plane we know its true metric depth `Z` (camera-space
+    z) and the model's disparity `rel_depth` at the pixel it projects to. We fit
+    the inverse depth linearly, `1/Z = a*disp + b`, with outlier rejection.
 
     Returns None when there is not enough (or not sane) evidence. `diag`, if
     given, is filled with plane/sample/spread numbers so the caller can explain
@@ -172,22 +190,26 @@ def fit_metric_scale(
         # b is unidentifiable from this view; assume no offset.
         return _scale_only(d, z)
 
-    a, b = (float(x) for x in np.polyfit(d, z, 1))
-    for _ in range(3):  # robust refit: drop > 3*MAD residuals
-        resid = z - (a * d + b)
-        mad = float(np.median(np.abs(resid - np.median(resid)))) + 1e-6
+    # Linear least squares in inverse depth: 1/Z = a*disp + b.
+    inv = 1.0 / z
+    a, b = (float(x) for x in np.polyfit(d, inv, 1))
+    for _ in range(3):  # robust refit: drop > 3*MAD residuals (inverse space)
+        resid = inv - (a * d + b)
+        mad = float(np.median(np.abs(resid - np.median(resid)))) + 1e-9
         keep = np.abs(resid) < 3.0 * mad
         if keep.sum() < 6:
             break
-        a, b = (float(x) for x in np.polyfit(d[keep], z[keep], 1))
+        a, b = (float(x) for x in np.polyfit(d[keep], inv[keep], 1))
     if not np.isfinite(a) or a <= 0:
         return None
-    if abs(b) > 0.6 * float(np.median(z)):
-        # The offset swamps the scale term: a degenerate fit despite the spread
-        # test. Refuse it and fall back to b=0.
+    signal = a * d + b
+    if not np.all(signal > 0):
+        # Some samples imply a non-positive inverse depth (behind the camera
+        # in this model): the offset is not physically consistent. Use b=0.
         return _scale_only(d, z)
-    resid = z - (a * d + b)
-    return ScaleFit(a, b, int(d.size), float(np.sqrt(np.mean(resid**2))), "affine")
+    resid = z - inv_depth_to_depth(signal)
+    rms = float(np.sqrt(np.mean(resid[np.isfinite(resid)] ** 2)))
+    return ScaleFit(a, b, int(d.size), rms, "affine")
 
 
 class ScaleTracker:
@@ -356,7 +378,7 @@ def unproject_depth(
     h, w = rel_depth.shape
     ys, xs = np.mgrid[0:h:stride, 0:w:stride]
     d = rel_depth[ys, xs].astype(np.float64)
-    z = scale.a * d + scale.b
+    z = scale.depth(d)
     ok = np.isfinite(z) & (z > min_depth) & (z < max_depth)
     if not ok.any():
         return np.empty((0, 3)), np.empty(0, np.int64), np.empty(0, np.int64)

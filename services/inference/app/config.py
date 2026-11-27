@@ -49,13 +49,19 @@ FASTSAM_MODEL = os.environ.get("FASTSAM_MODEL", str(ROOT / "notebooks" / "FastSA
 YOLO_SEG_MODEL = os.environ.get("YOLO_SEG_MODEL", str(ROOT / "yolo11n-seg.pt"))
 
 # --- depth (Depth Anything V2, exported to OpenVINO) ---------------------
+# Metric (indoor) checkpoint: outputs depth in metres directly, so the recon
+# path needs no per-frame scale fit. See docs/METRIC_DEPTH.md.
 DEPTH_MODEL = os.environ.get(
-    "DEPTH_MODEL", "depth-anything/Depth-Anything-V2-Small-hf"
+    "DEPTH_MODEL", "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
 )
+# Focal length (px) the metric model was trained at. 0 = no correction.
+# Metric depth scales with focal length, so if the phone's focal differs, the
+# output is off by f/f0. Calibrate once against a known distance; don't fit.
+DEPTH_FOCAL_CANON = float(os.environ.get("DEPTH_FOCAL_CANON", "0"))
 DEPTH_DEVICE = os.environ.get("DEPTH_DEVICE", "GPU")
 DEPTH_IR = os.environ.get(
     "DEPTH_IR",
-    str(ROOT / "depth_anything_v2_small_openvino_model" / "depth_anything_v2_small.xml"),
+    str(ROOT / "depth_anything_v2_metric_indoor_small_openvino_model" / "depth_anything_v2_metric_indoor_small.xml"),
 )
 
 # Horizontal field of view used to build intrinsics (overridable per request).
@@ -75,6 +81,7 @@ RECON_MAX_DEPTH = float(os.environ.get("RECON_MAX_DEPTH", "12.0"))
 RECON_CLOUD_EVERY = int(os.environ.get("RECON_CLOUD_EVERY", "4"))
 RECON_CLOUD_VOXEL = float(os.environ.get("RECON_CLOUD_VOXEL", "0.12"))
 RECON_CLOUD_MAX = int(os.environ.get("RECON_CLOUD_MAX", "30000"))
+# The TSDF method (recon_methods "tsdf") is the only one with a surface.
 
 # Record every keyframe (JPEG + full request JSON) to disk so a walk-around can
 # be replayed offline with different scales / voxel sizes / methods. This is the

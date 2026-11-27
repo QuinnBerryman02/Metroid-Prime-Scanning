@@ -158,6 +158,18 @@ class ReconCloud(BaseModel):
     scaleSamples: int = 0
 
 
+class ReconMesh(BaseModel):
+    """A TSDF surface snapshot as a triangle mesh (base64 buffers)."""
+
+    vertices: int
+    faces: int
+    positions: str  # base64 little-endian float32, xyz triples (world metres)
+    colors: str  # base64 uint8, rgb triples, per vertex
+    indices: str  # base64 little-endian uint32, triangle index triples
+    voxel: float = 0.0
+    observedNodes: int = 0
+
+
 class ReconStatusResponse(BaseModel):
     keyframes: int = 0
     fused: int = 0
@@ -172,14 +184,30 @@ class ReconStatusResponse(BaseModel):
     scaleMethod: str | None = None
 
 
+class ReconObject(BaseModel):
+    """A scannable object seen from two or more views (step 2: candidate)."""
+
+    id: int
+    label: str
+    score: float
+    views: int
+    carved: int = 0
+    anchor: list[float] = Field(default_factory=list)
+    centre: list[float]
+    halfExtent: list[float]
+    status: str
+
+
 class ReconFrameResponse(BaseModel):
     ok: bool = True
+    objects: list[ReconObject] = Field(default_factory=list)
     keyframes: int = 0
     # Frames this session's map has actually fused (scale failures etc. skip).
     fused: int = 0
     skipped: int = 0
     voxels: int = 0
     cloud: ReconCloud | None = None
+    mesh: ReconMesh | None = None
     timing: dict[str, float] = Field(default_factory=dict)
     # Which reconstruction method produced this frame's map.
     method: str = ""

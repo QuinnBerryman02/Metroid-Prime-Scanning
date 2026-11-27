@@ -24,6 +24,8 @@ import type {
   ReconReplayMsg,
   ReconClearMsg,
   ReconCloudMsg,
+  ReconMeshMsg,
+  ReconObjectsMsg,
   ReconFrameMsg,
   ReconKeyframeMsg,
   ScanRequest,
@@ -77,6 +79,14 @@ const KEYFRAME_REPLAY_MAX = 200;
 const reconKeyframes = new Map<string, ReconKeyframeMsg[]>();
 // Latest cloud snapshot per session, so a late viewer gets the map immediately.
 const reconClouds = new Map<string, ReconCloudMsg>();
+const reconMeshes = new Map<string, ReconMeshMsg>();
+const reconObjects = new Map<string, ReconObjectsMsg>();
+// The method + params the viewer has selected. Live keyframes from the phone
+// carry no method of their own, so they use this; replays name theirs.
+let activeRecon: { method: string; params: Record<string, number | string | boolean> } = {
+  method: "voxel",
+  params: {},
+};
 
 interface ReconStats {
   fused?: number;
@@ -129,14 +139,36 @@ interface InferenceCloud {
  * The session's current metric planes ride along: the inference needs them to
  * recover the depth model's metric scale (MS3.1).
  */
-async function forwardReconFrame(msg: ReconFrameMsg) {
+async function forwardReconFrame(msg: ReconFrameMsg, retries = 0) {
   const currentPlanes = [...(planes.get(msg.sessionId)?.values() ?? [])];
+  const method = msg.method ?? activeRecon.method;
+  const params = msg.params ?? activeRecon.params;
+  let res: Response;
   try {
-    const res = await fetch(`${INFERENCE_URL}/recon/frame`, {
+    res = await fetch(`${INFERENCE_URL}/recon/frame`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ...msg, planes: currentPlanes }),
+      // Every keyframe gets a cloud + surface snapshot back: no batching.
+      body: JSON.stringify({ ...msg, method, params, planes: currentPlanes, forceSnapshot: true }),
+      // A hung inference must not stall the queue forever.
+      signal: AbortSignal.timeout(RECON_FRAME_TIMEOUT_MS),
     });
+  } catch (e) {
+    // Replays are never lost to a restart or a slow model load: wait and retry.
+    if (retries > 0) {
+      app.log.warn({ frame: msg.frameId, retries }, "inference not ready - retrying");
+      await new Promise((r) => setTimeout(r, 1000));
+      return forwardReconFrame(msg, retries - 1);
+    }
+    app.log.warn({ err: e }, "inference /recon/frame unreachable");
+    setReconStats(msg.sessionId, { note: "inference unreachable" });
+    return;
+  }
+  try {
+    if (res.status === 503 && retries > 0) {
+      await new Promise((r) => setTimeout(r, 1000));
+      return forwardReconFrame(msg, retries - 1);
+    }
     if (!res.ok) {
       app.log.warn({ status: res.status }, "inference /recon/frame failed");
       setReconStats(msg.sessionId, {
@@ -146,6 +178,8 @@ async function forwardReconFrame(msg: ReconFrameMsg) {
     }
     const data = (await res.json()) as {
       cloud?: InferenceCloud | null;
+      mesh?: Omit<ReconMeshMsg, "type" | "sessionId" | "at"> | null;
+      objects?: ReconObjectsMsg["objects"];
       voxels?: number;
       fused?: number;
       skipped?: number;
@@ -180,6 +214,43 @@ async function forwardReconFrame(msg: ReconFrameMsg) {
       timing: data.timing ?? null,
       note: data.reason ?? null,
     });
+
+    // Always pair a cloud with a mesh message: a method without a surface sends
+    // vertices=0, which clears any surface from an earlier run in the viewer.
+    if (data.cloud) {
+      const mesh: ReconMeshMsg = {
+        type: "recon_mesh",
+        sessionId: msg.sessionId,
+        at: Date.now(),
+        vertices: data.mesh?.vertices ?? 0,
+        faces: data.mesh?.faces ?? 0,
+        positions: data.mesh?.positions ?? "",
+        colors: data.mesh?.colors ?? "",
+        indices: data.mesh?.indices ?? "",
+        voxel: data.mesh?.voxel ?? 0,
+        observedNodes: data.mesh?.observedNodes ?? 0,
+      };
+      if (mesh.vertices > 0) reconMeshes.set(msg.sessionId, mesh);
+      else reconMeshes.delete(msg.sessionId);
+      broadcast(mesh, "viewer");
+    }
+
+    if (data.objects) {
+      const objs: ReconObjectsMsg = {
+        type: "recon_objects",
+        sessionId: msg.sessionId,
+        objects: data.objects,
+        at: Date.now(),
+      };
+      reconObjects.set(msg.sessionId, objs);
+      broadcast(objs, "viewer");
+      // The phone that produced these keyframes gets them too, to draw the markers.
+      for (const [socket, state] of clients) {
+        if (state.role === "device" && state.sessionId === msg.sessionId && socket.readyState === 1) {
+          socket.send(JSON.stringify(objs));
+        }
+      }
+    }
 
     if (!data.cloud) return;
     const cloud: ReconCloudMsg = {
@@ -227,7 +298,52 @@ app.get("/health", async () => ({
 
 app.get("/world", async () => ({ objects: [...world.values()] }));
 
-function handleReconFrame(msg: ReconFrameMsg) {
+// --- recon frame queue ------------------------------------------------------
+// Inference handles one frame at a time, so frames go through one queue:
+// * replays are never dropped - the replay loop waits for each frame to finish
+//   before sending the next, and retries if inference is still starting up;
+// * live keyframes queue too, but only LIVE_QUEUE_MAX deep. A phone outrunning
+//   inference drops its oldest queued keyframes rather than lagging minutes.
+const RECON_FRAME_TIMEOUT_MS = 120_000;
+const LIVE_QUEUE_MAX = Number(process.env.LIVE_QUEUE_MAX ?? 4);
+type ReconJob = { replay: boolean; run: () => Promise<void>; done: () => void };
+const reconQueue: ReconJob[] = [];
+let reconPumping = false;
+
+/** Queue one frame. The promise settles when the job has run (or been dropped). */
+function enqueueRecon(job: Omit<ReconJob, "done">): Promise<void> {
+  return new Promise((resolve) => {
+    reconQueue.push({ ...job, done: resolve });
+    if (!job.replay) {
+      const live = reconQueue.filter((j) => !j.replay);
+      if (live.length > LIVE_QUEUE_MAX) {
+        const oldest = live[0]!;
+        reconQueue.splice(reconQueue.indexOf(oldest), 1);
+        app.log.warn({ queued: live.length }, "inference busy - dropped oldest live keyframe");
+        oldest.done();
+      }
+    }
+    void pumpRecon();
+  });
+}
+
+async function pumpRecon() {
+  if (reconPumping) return;
+  reconPumping = true;
+  try {
+    for (let job = reconQueue.shift(); job; job = reconQueue.shift()) {
+      try {
+        await job.run();
+      } finally {
+        job.done();
+      }
+    }
+  } finally {
+    reconPumping = false;
+  }
+}
+
+function handleReconFrame(msg: ReconFrameMsg, replay = false): Promise<void> {
   const list = reconKeyframes.get(msg.sessionId) ?? [];
   const kf: ReconKeyframeMsg = {
     type: "recon_keyframe",
@@ -247,10 +363,28 @@ function handleReconFrame(msg: ReconFrameMsg) {
   reconKeyframes.set(msg.sessionId, list);
   broadcast(kf, "viewer");
   broadcastReconStatus(msg.sessionId);
-  void forwardReconFrame(msg);
+  return enqueueRecon({
+    replay,
+    run: () => forwardReconFrame(msg, replay ? 30 : 0),
+  });
 }
 
 /** The reconstruction methods + their params, so the viewer can build controls. */
+/** Per-view evidence for one session's objects (heavy: fetched on click). */
+app.get("/recon/objects", async (req, reply) => {
+  const session = String((req.query as { session?: string }).session ?? "");
+  try {
+    const res = await fetch(
+      `${INFERENCE_URL}/recon/objects?session=${encodeURIComponent(session)}`,
+    );
+    if (!res.ok) throw new Error(`inference ${res.status}`);
+    return await res.json();
+  } catch (e) {
+    reply.code(502);
+    return { error: `inference unreachable: ${String(e)}`, objects: [] };
+  }
+});
+
 app.get("/recon/methods", async (_req, reply) => {
   try {
     const res = await fetch(`${INFERENCE_URL}/recon/methods`);
@@ -384,7 +518,7 @@ async function startReplay(
           hitDistance: meta.hitDistance ?? null,
           record: false, // never re-record a replay
           // A run always ends with geometry, wherever the every-Nth gate fell.
-          forceSnapshot: i === files.length - 1,
+          forceSnapshot: true,
           method,
           params,
         };
@@ -399,7 +533,8 @@ async function startReplay(
           },
           "viewer",
         );
-        handleReconFrame(msg);
+        // Wait for inference to finish this frame before the next one.
+        await handleReconFrame(msg, true);
       } catch (e) {
         app.log.warn({ file, err: e }, "replay frame failed");
       }
@@ -414,6 +549,25 @@ async function startReplay(
   })();
   return files.length;
 }
+
+/** The viewer tells us which algorithm live keyframes should use. */
+app.post("/recon/active", async (req, reply) => {
+  const body = req.body as
+    | { method?: unknown; params?: unknown }
+    | undefined;
+  if (typeof body?.method !== "string" || body.method.length > 64) {
+    reply.code(400);
+    return { error: "missing method" };
+  }
+  const params =
+    body.params && typeof body.params === "object"
+      ? (body.params as Record<string, number | string | boolean>)
+      : {};
+  activeRecon = { method: body.method, params };
+  return { ok: true, ...activeRecon };
+});
+
+app.get("/recon/active", async () => activeRecon);
 
 app.post("/recon/replay", async (req, reply) => {
   const body = req.body as
@@ -570,6 +724,8 @@ app.register(async (f) => {
     for (const list of planes.values()) for (const a of list.values()) send(socket, a);
     for (const list of reconKeyframes.values()) for (const kf of list) send(socket, kf);
     for (const cloud of reconClouds.values()) send(socket, cloud);
+    for (const mesh of reconMeshes.values()) send(socket, mesh);
+    for (const objs of reconObjects.values()) send(socket, objs);
 
     socket.on("message", (raw: Buffer, isBinary: boolean) => {
       if (isBinary) return; // binary frames handled in a later milestone
@@ -615,7 +771,7 @@ app.register(async (f) => {
           break;
         }
         case "recon_frame":
-          handleReconFrame(msg);
+          void handleReconFrame(msg);
           break;
         case "plane": {
           const perSession = planes.get(msg.sessionId) ?? new Map<number, PlaneMsg>();
@@ -641,6 +797,8 @@ app.register(async (f) => {
       if (state?.role === "device") {
         latestPose.delete(state.sessionId);
         reconClouds.delete(state.sessionId);
+        reconMeshes.delete(state.sessionId);
+        reconObjects.delete(state.sessionId);
         reconStats.delete(state.sessionId);
         if (reconKeyframes.delete(state.sessionId)) {
           broadcast(

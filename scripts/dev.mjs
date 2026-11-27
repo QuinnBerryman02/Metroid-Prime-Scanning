@@ -114,26 +114,45 @@ function pipe(stream, name) {
   });
 }
 
-function shutdown(code = 0) {
+/** Kill a child and everything it spawned, and wait until that has happened. */
+function killTree(child) {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve();
+    if (isWin) {
+      // /T walks the whole tree: uvicorn --reload's worker dies with its parent.
+      const k = spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      k.on("exit", () => resolve());
+      k.on("error", () => resolve());
+    } else {
+      child.once("exit", () => resolve());
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* already gone */
+        }
+        resolve();
+      }, 3000);
+    }
+  });
+}
+
+async function shutdown(code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
-  process.stdout.write(`\n${DIM}Shutting down…${RESET}\n`);
-  for (const child of children) {
-    if (child.exitCode !== null || child.signalCode !== null) continue;
-    try {
-      if (isWin) {
-        spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
-          stdio: "ignore",
-        });
-      } else {
-        child.kill("SIGTERM");
-      }
-    } catch {
-      /* ignore */
-    }
-  }
-  // Give children a moment to die, then exit.
-  setTimeout(() => process.exit(code), 500);
+  process.stdout.write(`
+${DIM}Shutting down…${RESET}
+`);
+  await Promise.all(children.map(killTree));
+  // Anything that escaped its tree (e.g. a worker that re-parented) is caught
+  // by the port-based sweep: `npm run stop`.
+  process.stdout.write(`${DIM}All services stopped. (If a process survived: npm run stop)${RESET}
+`);
+  process.exit(code);
 }
 
 console.log("Starting full stack — inference + gateway + client (Ctrl+C to stop)\n");

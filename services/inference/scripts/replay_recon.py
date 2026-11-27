@@ -69,7 +69,7 @@ def rel_map(est, jpg: Path, npy: Path) -> np.ndarray:
     from PIL import Image
 
     pil = Image.open(jpg).convert("RGB")
-    rel = cv2.medianBlur(est.predict_depth(pil), 5)
+    rel = cv2.medianBlur(est.predict(pil), 5)
     np.save(npy, rel)
     return rel
 

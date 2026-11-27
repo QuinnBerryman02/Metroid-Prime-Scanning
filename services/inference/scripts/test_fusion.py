@@ -25,7 +25,12 @@ H, W = 480, 640
 F = 0.5 * W / np.tan(np.radians(60) / 2.0)
 INTR = (F, F, W / 2.0, H / 2.0)
 I4 = np.eye(4)
-A_TRUE = 0.4  # rel_depth = Z / A_TRUE
+# Synthetic affine-invariant disparity (what Depth Anything gives us):
+#   disp = (1/Z) / A_TRUE + Q_TRUE   =>   1/Z = a*disp + b  with a=1/A... see below
+DISP_K = 2.5   # disp = DISP_K / Z + Q_TRUE
+Q_TRUE = 0.3   # unknown per-image shift the fit must absorb
+A_TRUE = 1.0 / DISP_K  # expected a in 1/Z = a*disp + b
+B_TRUE = -Q_TRUE / DISP_K
 
 
 def quad_at(z, u0, u1, v0, v1):
@@ -40,7 +45,7 @@ def quad_at(z, u0, u1, v0, v1):
 # True metric depth: right half near (1.5 m), left half far (4 m).
 Z_true = np.full((H, W), 1.5)
 Z_true[:, : W // 2] = 4.0
-rel = Z_true / A_TRUE
+rel = DISP_K / Z_true + Q_TRUE
 
 planes = [
     {"polygon": quad_at(1.5, 0.55 * W, 0.95 * W, 0.15 * H, 0.85 * H)},
@@ -50,7 +55,8 @@ planes = [
 fit = fit_metric_scale(planes, I4, INTR, rel)
 print(f"scale fit: {fit}")
 assert fit is not None, "fit returned None"
-assert abs(fit.a - A_TRUE) / A_TRUE < 0.05, f"a={fit.a} true={A_TRUE}" 
+assert abs(fit.a - A_TRUE) / A_TRUE < 0.05, f"a={fit.a} true={A_TRUE}"
+assert abs(fit.b - B_TRUE) < 0.05, f"b={fit.b} true={B_TRUE}"  # shift absorbed
 print(f"  recovered a={fit.a:.4f} (true {A_TRUE}) b={fit.b:.4f} "
       f"rms={fit.rms:.4f} n={fit.samples} method={fit.method}")
 
@@ -82,7 +88,7 @@ assert near > 0 and far > 0
 # One fronto-parallel plane at a single depth: b is unidentifiable, but the
 # scale `a` is still pinned (Z/rel). Real depth maps always vary a little, so
 # give the fixture a small gradient rather than a perfectly constant map.
-rel1 = (2.0 + 0.02 * np.tile(np.linspace(-1, 1, W), (H, 1))) / A_TRUE
+rel1 = DISP_K / (2.0 + 0.02 * np.tile(np.linspace(-1, 1, W), (H, 1)))  # no shift: scale-only is exact
 single = fit_metric_scale(
     [{"polygon": quad_at(2.0, 0.3 * W, 0.7 * W, 0.2 * H, 0.8 * H)}],
     I4,
@@ -102,7 +108,7 @@ close = fit_metric_scale(
     ],
     I4,
     INTR,
-    Zc / A_TRUE,
+    DISP_K / Zc,  # no shift: scale-only is exact
 )
 print(f"close-depth fit: {close}")
 assert close is not None, "should still yield a scale"

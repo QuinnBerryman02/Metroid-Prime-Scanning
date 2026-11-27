@@ -131,6 +131,19 @@ class DepthEstimator:
             )
         return depth
 
+    def predict_metres(self, image: Image.Image, focal_px: float | None = None) -> np.ndarray:
+        """Metric depth in metres (metric checkpoints only).
+
+        If the phone's focal length (px) is given and DEPTH_FOCAL_CANON is set,
+        rescale from the training focal: metric depth scales with f.
+        """
+        from . import config
+
+        depth = self.predict(image)
+        if focal_px and config.DEPTH_FOCAL_CANON > 0:
+            depth = depth * (focal_px / config.DEPTH_FOCAL_CANON)
+        return depth
+
     def predict_depth(self, image: Image.Image) -> np.ndarray:
         """True depth (larger = farther), i.e. `1 / disparity`.
 

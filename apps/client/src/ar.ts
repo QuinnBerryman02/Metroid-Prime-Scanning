@@ -19,6 +19,8 @@ import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
+import { Mesh } from "@babylonjs/core/Meshes/mesh";
 import { WebXRDefaultExperience } from "@babylonjs/core/XR/webXRDefaultExperience";
 import { WebXRFeatureName } from "@babylonjs/core/XR/webXRFeaturesManager";
 import "@babylonjs/core/XR/features/WebXRHitTest";
@@ -32,7 +34,7 @@ import type {
   WebXRPlaneDetector,
 } from "@babylonjs/core/XR/features/WebXRPlaneDetector";
 import type { Camera } from "@babylonjs/core/Cameras/camera";
-import type { Obb, Quat, ScanResult, Vec3 } from "@metroid-scan/shared";
+import type { Obb, Quat, ReconObjectInfo, ScanResult, Vec3 } from "@metroid-scan/shared";
 import { installDebugOverlay, log } from "./lib/debug";
 import { createDiagnostics } from "./lib/report";
 import { GatewayClient } from "./lib/gateway";
@@ -70,8 +72,117 @@ function setStatus(html: string) {
 // --- gateway ----------------------------------------------------------------
 const gateway = new GatewayClient("device", sessionId, {
   onStatus: (s) => log(`ws ${s}`),
+  onReconObjects: (msg) => updateObjectMarkers(msg.objects),
 });
 gateway.connect();
+
+// --- scannable objects ------------------------------------------------------
+// The server's objects, drawn as circles at their anchors. Found = orange.
+// Holding the reticle on one for OBJECT_HOLD_MS turns it green and pops its
+// info. Scanned ids are remembered for the session, so a re-found object
+// stays green.
+const OBJECT_HOLD_MS = 2000;
+const OBJECT_SIZE = 0.22; // m, circle diameter
+const ORANGE = "#ff8c1a";
+const GREEN = "#3bff7a";
+const objectInfo = document.getElementById("objectInfo")!;
+objectInfo.addEventListener("click", () => {
+  objectInfo.hidden = true;
+});
+
+interface ObjectMarker {
+  id: number;
+  mesh: Mesh;
+  tex: DynamicTexture;
+  info: ReconObjectInfo;
+  scanned: boolean;
+  hold: number; // ms the reticle has been on it
+  pop: number; // 0..1 after a scan completes
+}
+const markers = new Map<number, ObjectMarker>();
+const scannedIds = new Set<number>();
+
+function paintCircle(m: ObjectMarker, colour: string) {
+  const ctx = m.tex.getContext() as unknown as CanvasRenderingContext2D;
+  ctx.clearRect(0, 0, 256, 256);
+  ctx.beginPath();
+  ctx.arc(128, 128, 112, 0, Math.PI * 2);
+  ctx.fillStyle = colour;
+  ctx.fill();
+  ctx.lineWidth = 10;
+  ctx.strokeStyle = "#0b1014";
+  ctx.stroke();
+  m.tex.update();
+}
+
+function updateObjectMarkers(objects: ReconObjectInfo[]) {
+  const live = new Set(objects.map((o) => o.id));
+  for (const [id, m] of markers) {
+    if (!live.has(id)) {
+      m.mesh.material?.dispose();
+      m.tex.dispose();
+      m.mesh.dispose();
+      markers.delete(id);
+    }
+  }
+  for (const o of objects) {
+    let m = markers.get(o.id);
+    if (!m) {
+      const mesh = MeshBuilder.CreatePlane(`object-circle-${o.id}`, { size: OBJECT_SIZE }, scene);
+      mesh.billboardMode = Mesh.BILLBOARDMODE_ALL;
+      const tex = new DynamicTexture(`object-tex-${o.id}`, { width: 256, height: 256 }, scene, false);
+      tex.hasAlpha = true;
+      const mat = new StandardMaterial(`object-mat-${o.id}`, scene);
+      mat.diffuseTexture = tex;
+      mat.emissiveTexture = tex;
+      mat.useAlphaFromDiffuseTexture = true;
+      mat.disableLighting = true;
+      mat.backFaceCulling = false;
+      mesh.material = mat;
+      m = { id: o.id, mesh, tex, info: o, scanned: scannedIds.has(o.id), hold: 0, pop: 1 };
+      markers.set(o.id, m);
+      paintCircle(m, m.scanned ? GREEN : ORANGE);
+    }
+    m.info = o;
+    m.mesh.position = new Vector3(o.anchor[0], o.anchor[1], o.anchor[2]);
+  }
+}
+
+function completeScan(m: ObjectMarker) {
+  m.scanned = true;
+  m.hold = 0;
+  m.pop = 0;
+  scannedIds.add(m.id);
+  paintCircle(m, GREEN);
+  objectInfo.innerHTML =
+    `<strong>${m.info.label}</strong> &middot; ${m.info.views} views` +
+    `<p>Description not generated yet.</p>`;
+  objectInfo.hidden = false;
+  log(`scanned: ${m.info.label} #${m.id}`);
+}
+
+function updateObjectHold() {
+  const dtMs = engine.getDeltaTime();
+  const pick = scene.pick(engine.getRenderWidth() / 2, engine.getRenderHeight() / 2, (mesh) =>
+    mesh.name.startsWith("object-circle-"),
+  );
+  const onId =
+    pick?.hit && pick.pickedMesh
+      ? Number(pick.pickedMesh.name.slice("object-circle-".length))
+      : null;
+  for (const m of markers.values()) {
+    if (m.scanned) {
+      // pop: swell to 1.4x then settle back to 1x
+      m.pop = Math.min(1, m.pop + dtMs / 400);
+      m.mesh.scaling.setAll(1 + 0.4 * (1 - m.pop));
+      continue;
+    }
+    if (m.id === onId) m.hold = Math.min(OBJECT_HOLD_MS, m.hold + dtMs);
+    else m.hold = Math.max(0, m.hold - dtMs * 2);
+    m.mesh.scaling.setAll(1 + 0.4 * (m.hold / OBJECT_HOLD_MS));
+    if (m.hold >= OBJECT_HOLD_MS) completeScan(m);
+  }
+}
 
 // --- ARCore planes ----------------------------------------------------------
 // Plane detection is ARCore's free environment model: metric polygons for the
@@ -384,11 +495,11 @@ function captureNow(): CaptureFrame | null {
 // A keyframe is a frame worth *fusing* later: new enough, moved enough, sharp
 // enough, and not a duplicate. Captures are expensive (readPixels + JPEG + a
 // blur score), so gate them hard - ~2-3 Hz is plenty for reconstruction.
-// Auto-streaming is off while we debug the fusion: keyframes go out only when
-// the Key button is tapped, so we can inspect the geometry from 1-2 frames
-// without a session's worth of data smearing over it.
-const AUTO_KEYFRAMES = false;
-const KF_MIN_INTERVAL_MS = 350;
+// Auto-streaming: a keyframe every ~300 ms while the phone is moving, but only
+// when it has actually moved or turned (the minimums below). A still phone
+// sends nothing, and the Key button still forces one.
+const AUTO_KEYFRAMES = true;
+const KF_MIN_INTERVAL_MS = 300;
 const KF_MIN_MOVE = 0.02; // metres
 const KF_MIN_ROT = 0.026; // radians (~1.5 deg)
 // Conservative floor: reject only truly ruined frames until device reports give
@@ -852,6 +963,7 @@ async function streamPose() {
 }
 
 scene.onBeforeRenderObservable.add(() => {
+  updateObjectHold();
   if (pendingCapture) {
     const resolve = pendingCapture;
     pendingCapture = null;

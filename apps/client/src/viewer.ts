@@ -21,7 +21,15 @@ import "@babylonjs/core/Meshes/thinInstanceMesh";
 import { VertexData } from "@babylonjs/core/Meshes/mesh.vertexData";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
-import type { PlaneMsg, ReconCloudMsg, ReconKeyframeMsg } from "@metroid-scan/shared";
+import { DynamicTexture } from "@babylonjs/core/Materials/Textures/dynamicTexture";
+import type {
+  ReconObjectInfo,
+  PlaneMsg,
+  ReconCloudMsg,
+  ReconKeyframeMsg,
+  ReconMeshMsg,
+  ReconObjectsMsg,
+} from "@metroid-scan/shared";
 import { installDebugOverlay, log } from "./lib/debug";
 import { GatewayClient } from "./lib/gateway";
 
@@ -99,6 +107,17 @@ grid.material = (() => {
 })();
 grid.position.y = 0;
 
+// Display-only: moves the floor grid up/down to sit under the reconstructed
+// floor. It does not change the data, only where the grid is drawn.
+const floorSlider = document.getElementById("floorSlider") as HTMLInputElement;
+const floorValue = document.getElementById("floorValue") as HTMLSpanElement;
+function setFloorHeight(y: number) {
+  grid.position.y = y;
+  floorValue.textContent = `${y.toFixed(2)} m`;
+}
+floorSlider.addEventListener("input", () => setFloorHeight(Number(floorSlider.value)));
+setFloorHeight(Number(floorSlider.value));
+
 // Phone marker: a body box + a forward wedge, positioned by relayed pose.
 const phone = MeshBuilder.CreateBox("phone", { width: 0.08, height: 0.16, depth: 0.02 }, scene);
 phone.material = (() => {
@@ -166,13 +185,363 @@ interface PlaneVis {
   normal: ReturnType<typeof MeshBuilder.CreateLines>;
 }
 const planeMeshes = new Map<number, PlaneVis>();
-let planesVisible = true;
+
+// Display layers: toggled by the hotkey or the checkbox under the log.
+type LayerId = "cloud" | "surface" | "planes" | "objects" | "billboard" | "crop";
+const layers: Record<LayerId, boolean> = {
+  cloud: true,
+  surface: true,
+  planes: true,
+  objects: true,
+  billboard: true,
+  crop: true,
+};
+try {
+  const saved = JSON.parse(localStorage.getItem("viewer.layers") ?? "{}");
+  for (const k of Object.keys(layers) as LayerId[]) {
+    if (typeof saved[k] === "boolean") layers[k] = saved[k];
+  }
+} catch {
+  /* ignore */
+}
+const LAYER_KEYS: Record<LayerId, string> = {
+  cloud: "C",
+  surface: "M",
+  planes: "P",
+  objects: "O",
+  billboard: "L",
+  crop: "T",
+};
+const LAYER_LABELS: Record<LayerId, string> = {
+  cloud: "point cloud",
+  surface: "surface (mesh)",
+  planes: "ARCore planes",
+  objects: "scan boxes",
+  billboard: "object labels (billboard)",
+  crop: "surface cropped to objects",
+};
+
+// --- PLY export -------------------------------------------------------------
+// Binary little-endian PLY in the viewer's world frame (ARCore, metres, y up).
+// Colours are 8-bit. Faces are written only for surfaces.
+function writePly(
+  positions: Float32Array,
+  colors: Float32Array,
+  faces?: Uint32Array,
+): ArrayBuffer {
+  const n = positions.length / 3;
+  const f = faces ? faces.length / 3 : 0;
+  const header = [
+    "ply",
+    "format binary_little_endian 1.0",
+    `element vertex ${n}`,
+    "property float x",
+    "property float y",
+    "property float z",
+    "property uchar red",
+    "property uchar green",
+    "property uchar blue",
+    ...(f ? [`element face ${f}`, "property list uchar uint vertex_indices"] : []),
+    "end_header",
+    "",
+  ].join("\n");
+  const head = new TextEncoder().encode(header);
+  const body = n * 15 + f * 13;
+  const buf = new ArrayBuffer(head.length + body);
+  const out = new Uint8Array(buf);
+  out.set(head, 0);
+  const dv = new DataView(buf, head.length);
+  let o = 0;
+  for (let i = 0; i < n; i++) {
+    dv.setFloat32(o, positions[i * 3]!, true);
+    dv.setFloat32(o + 4, positions[i * 3 + 1]!, true);
+    dv.setFloat32(o + 8, positions[i * 3 + 2]!, true);
+    dv.setUint8(o + 12, Math.round((colors[i * 4] ?? 0) * 255));
+    dv.setUint8(o + 13, Math.round((colors[i * 4 + 1] ?? 0) * 255));
+    dv.setUint8(o + 14, Math.round((colors[i * 4 + 2] ?? 0) * 255));
+    o += 15;
+  }
+  if (faces) {
+    for (let i = 0; i < f; i++) {
+      dv.setUint8(o, 3);
+      dv.setUint32(o + 1, faces[i * 3]!, true);
+      dv.setUint32(o + 5, faces[i * 3 + 1]!, true);
+      dv.setUint32(o + 9, faces[i * 3 + 2]!, true);
+      o += 13;
+    }
+  }
+  return buf;
+}
+
+function downloadPly(name: string, buf: ArrayBuffer) {
+  const url = URL.createObjectURL(new Blob([buf], { type: "application/octet-stream" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${name}-${new Date().toISOString().replace(/[:.]/g, "-")}.ply`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+document.getElementById("exportPoints")!.addEventListener("click", () => {
+  if (!lastCloudArrays) {
+    log("export: no point cloud yet");
+    return;
+  }
+  const n = lastCloudArrays.positions.length / 3;
+  downloadPly("environment-points", writePly(lastCloudArrays.positions, lastCloudArrays.colors));
+  log(`export: ${n} points`);
+});
+
+document.getElementById("exportSurface")!.addEventListener("click", () => {
+  if (!lastSurface) {
+    log("export: no surface yet (choose a TSDF method)");
+    return;
+  }
+  const { pos, idx, col } = lastSurface;
+  downloadPly("environment-surface", writePly(pos, col, idx));
+  log(`export: ${pos.length / 3} vertices, ${idx.length / 3} faces`);
+});
+
+/** Candidate object boxes (step 2): wireframes around each object's centre. */
+let objectBoxes: Mesh[] = [];
+let latestObjects: ReconObjectInfo[] = [];
+let billboardMeshes: Mesh[] = [];
+let cropMesh: Mesh | null = null;
+let lastSurface: {
+  pos: Float32Array;
+  idx: Uint32Array;
+  col: Float32Array;
+  normals: Float32Array;
+} | null = null;
+
+/** Option 2: a labelled billboard at each object's anchor. */
+function buildBillboards() {
+  for (const b of billboardMeshes) b.dispose();
+  billboardMeshes = [];
+  for (const o of latestObjects) {
+    const plane = MeshBuilder.CreatePlane(`label-${o.id}`, { size: 0.5 }, scene);
+    plane.position = new Vector3(o.anchor[0], o.anchor[1], o.anchor[2]);
+    plane.billboardMode = Mesh.BILLBOARDMODE_ALL;
+    plane.isPickable = false;
+    const tex = new DynamicTexture(`label-tex-${o.id}`, { width: 512, height: 160 }, scene, false);
+    const ctx = tex.getContext() as unknown as CanvasRenderingContext2D;
+    ctx.fillStyle = "rgba(12,18,22,0.85)";
+    ctx.fillRect(0, 0, 512, 160);
+    ctx.fillStyle = o.status === "candidate" ? "#3bff7a" : "#ff8c1a";
+    ctx.font = "bold 64px sans-serif";
+    ctx.fillText(o.label, 16, 80);
+    ctx.font = "26px sans-serif";
+    ctx.fillStyle = "#cfd8dc";
+    ctx.fillText(`${o.views} views · ${o.carved} pts · ${o.status}`, 16, 130);
+    tex.update();
+    const mat = new StandardMaterial(`label-mat-${o.id}`, scene);
+    mat.diffuseTexture = tex;
+    mat.emissiveTexture = tex;
+    mat.disableLighting = true;
+    mat.backFaceCulling = false;
+    plane.material = mat;
+    billboardMeshes.push(plane);
+  }
+}
+
+/** Option 1: the room surface, keeping only triangles inside an object's carved box. */
+function buildCrop() {
+  cropMesh?.dispose();
+  cropMesh = null;
+  if (!lastSurface || latestObjects.length === 0) return;
+  const { pos, idx, col, normals } = lastSurface;
+  const kept: number[] = [];
+  for (let t = 0; t + 2 < idx.length; t += 3) {
+    const a = idx[t] ?? 0;
+    const b = idx[t + 1] ?? 0;
+    const c = idx[t + 2] ?? 0;
+    const cx = (pos[a * 3]! + pos[b * 3]! + pos[c * 3]!) / 3;
+    const cy = (pos[a * 3 + 1]! + pos[b * 3 + 1]! + pos[c * 3 + 1]!) / 3;
+    const cz = (pos[a * 3 + 2]! + pos[b * 3 + 2]! + pos[c * 3 + 2]!) / 3;
+    const inside = latestObjects.some((o) => {
+      const m = 0.05;
+      const [hx, hy, hz] = o.halfExtent;
+      return (
+        Math.abs(cx - o.centre[0]) <= hx + m &&
+        Math.abs(cy - o.centre[1]) <= hy + m &&
+        Math.abs(cz - o.centre[2]) <= hz + m
+      );
+    });
+    if (inside) kept.push(a, b, c);
+  }
+  log(`crop: ${kept.length / 3} surface triangles inside ${latestObjects.length} object box(es)`);
+  if (kept.length === 0) return;
+  const vd = new VertexData();
+  vd.positions = pos;
+  vd.indices = new Uint32Array(kept);
+  vd.normals = normals;
+  vd.colors = col;
+  const m = new Mesh("objectCrop", scene);
+  vd.applyToMesh(m);
+  const mat = new StandardMaterial("objectCropMat", scene);
+  mat.backFaceCulling = false;
+  mat.specularColor = new Color3(0.05, 0.05, 0.05);
+  m.material = mat;
+  m.hasVertexAlpha = false;
+  m.isVisible = layers.crop;
+  cropMesh = m;
+}
+
+function rebuildObjectViews() {
+  buildBillboards();
+  buildCrop();
+  applyLayers();
+}
+let objectsSession = "";
+const objectList = document.getElementById("objectList")!;
+const objectViews = document.getElementById("objectViews")!;
+const ovTitle = document.getElementById("ovTitle")!;
+const ovStrip = document.getElementById("ovStrip")!;
+document.getElementById("ovClose")!.addEventListener("click", () => {
+  objectViews.hidden = true;
+});
+
+interface ViewEvidence {
+  frameId: string;
+  score: number;
+  width: number;
+  height: number;
+  jpeg: string;
+  contour: [number, number][];
+  centroid: [number, number, number] | null;
+  centre: [number, number, number] | null;
+}
+
+/** Draw one view: the mask outline, the detection's centroid (red), and the
+ *  object's centre projected into this view (green). If they don't sit on the
+ *  object, the boxes are wrong for that view. */
+function drawView(v: ViewEvidence, caption: HTMLElement) {
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d")!;
+  const img = new Image();
+  img.onload = () => {
+    canvas.width = img.width;
+    canvas.height = img.height;
+    ctx.drawImage(img, 0, 0);
+    const W = img.width;
+    const H = img.height;
+    if (v.contour.length > 2) {
+      ctx.beginPath();
+      v.contour.forEach(([x, y], i) => (i ? ctx.lineTo(x * W, y * H) : ctx.moveTo(x * W, y * H)));
+      ctx.closePath();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "#ff8c1a";
+      ctx.stroke();
+    }
+    const dot = (p: [number, number, number] | null, colour: string) => {
+      if (!p) return;
+      ctx.beginPath();
+      ctx.arc(p[0] * W, p[1] * H, 5, 0, Math.PI * 2);
+      ctx.fillStyle = colour;
+      ctx.fill();
+    };
+    dot(v.centroid, "#ff3b3b");
+    dot(v.centre, "#3bff7a");
+  };
+  img.src = `data:image/jpeg;base64,${v.jpeg}`;
+  const fig = document.createElement("figure");
+  fig.appendChild(canvas);
+  caption.textContent = `${v.frameId} · score ${v.score.toFixed(2)}${
+    v.centre ? ` · centre ${v.centre[2].toFixed(2)} m` : " · centre behind"
+  }`;
+  fig.appendChild(caption);
+  ovStrip.appendChild(fig);
+}
+
+async function showObjectViews(id: number, label: string) {
+  const res = await fetch(`/api/recon/objects?session=${encodeURIComponent(objectsSession)}`);
+  const data = (await res.json()) as { objects: { id: number; views: ViewEvidence[] }[] };
+  const obj = data.objects.find((o) => o.id === id);
+  ovStrip.innerHTML = "";
+  ovTitle.textContent = `${label} #${id}: ${obj?.views.length ?? 0} view(s) · red = detection centroid, green = object centre`;
+  for (const v of obj?.views ?? []) drawView(v, document.createElement("figcaption"));
+  objectViews.hidden = false;
+}
+
+function renderObjects(msg: ReconObjectsMsg) {
+  objectsSession = msg.sessionId;
+  latestObjects = msg.objects;
+  objectList.innerHTML = "";
+  for (const o of msg.objects) {
+    const b = document.createElement("button");
+    b.textContent = `${o.label} · ${o.views} view(s) · ${o.carved} carved · ${o.status}`;
+    b.title = "show each view's mask and projected centre";
+    b.addEventListener("click", () => void showObjectViews(o.id, o.label));
+    objectList.appendChild(b);
+  }
+  for (const b of objectBoxes) b.dispose();
+  objectBoxes = [];
+  for (const o of msg.objects) {
+    const [hx, hy, hz] = o.halfExtent;
+    const box = MeshBuilder.CreateBox(
+      `object-${o.id}`,
+      { width: 2 * hx, height: 2 * hy, depth: 2 * hz },
+      scene,
+    );
+    box.position = new Vector3(o.centre[0], o.centre[1], o.centre[2]);
+    const mat = new StandardMaterial(`object-mat-${o.id}`, scene);
+    mat.wireframe = true;
+    // orange = candidate (3+ views), dimmer orange = tentative (2 views)
+    mat.emissiveColor =
+      o.status === "candidate" ? new Color3(1, 0.55, 0.1) : new Color3(0.5, 0.3, 0.1);
+    mat.disableLighting = true;
+    box.material = mat;
+    box.isPickable = false;
+    objectBoxes.push(box);
+  }
+  rebuildObjectViews();
+  const names = msg.objects.map((o) => `${o.label} (${o.views} views)`);
+  log(`objects: ${names.length ? names.join(", ") : "none yet"}`);
+}
+
+function applyLayers() {
+  for (const b of objectBoxes) b.isVisible = layers.objects;
+  for (const b of billboardMeshes) b.isVisible = layers.billboard;
+  if (cropMesh) cropMesh.isVisible = layers.crop;
+  if (cloudMesh) cloudMesh.isVisible = layers.cloud;
+  if (surfaceMesh) surfaceMesh.isVisible = layers.surface;
+  applyPlaneVisibility();
+  for (const k of Object.keys(layers) as LayerId[]) {
+    const box = document.getElementById(`layer-${k}`) as HTMLInputElement | null;
+    if (box) box.checked = layers[k];
+  }
+  try {
+    localStorage.setItem("viewer.layers", JSON.stringify(layers));
+  } catch {
+    /* ignore */
+  }
+}
+
+function setLayer(id: LayerId, on: boolean) {
+  layers[id] = on;
+  applyLayers();
+  log(`${LAYER_LABELS[id]} ${on ? "on" : "off"}`);
+}
+
+for (const k of Object.keys(layers) as LayerId[]) {
+  const box = document.getElementById(`layer-${k}`) as HTMLInputElement | null;
+  box?.addEventListener("change", () => setLayer(k, box.checked));
+}
+
+window.addEventListener("keydown", (e) => {
+  const t = e.target as HTMLElement | null;
+  if (t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) return;
+  const id = (Object.keys(LAYER_KEYS) as LayerId[]).find(
+    (k) => LAYER_KEYS[k] === e.key.toUpperCase(),
+  );
+  if (id) setLayer(id, !layers[id]);
+});
 
 function applyPlaneVisibility() {
   for (const v of planeMeshes.values()) {
-    v.fill.isVisible = planesVisible;
-    v.outline.isVisible = planesVisible;
-    v.normal.isVisible = planesVisible;
+    v.fill.isVisible = layers.planes;
+    v.outline.isVisible = layers.planes;
+    v.normal.isVisible = layers.planes;
   }
 }
 
@@ -241,13 +610,6 @@ function renderPlane(msg: PlaneMsg) {
   applyPlaneVisibility();
 }
 
-window.addEventListener("keydown", (e) => {
-  if (e.key === "p" || e.key === "P") {
-    planesVisible = !planesVisible;
-    applyPlaneVisibility();
-    log(`planes ${planesVisible ? "on" : "off"}`);
-  }
-});
 
 // Navigation: the mouse wheel already zooms, but be explicit about keys too.
 window.addEventListener("keydown", (e) => {
@@ -389,6 +751,57 @@ try {
 }
 let lastCloudMsg: ReconCloudMsg | null = null;
 
+// --- TSDF surface mesh (triangles, per-vertex colour) ----------------------
+let surfaceMesh: Mesh | null = null;
+
+function renderMesh(msg: ReconMeshMsg) {
+  surfaceMesh?.dispose();
+  surfaceMesh = null;
+  lastSurface = null;
+  if (msg.vertices === 0 || msg.faces === 0) {
+    rebuildObjectViews();
+    log("surface: none - this method has no surface (choose 'TSDF surface' in algorithms)");
+    return;
+  }
+  const pos = new Float32Array(decodeBase64(msg.positions).buffer.slice(0));
+  const idxBytes = decodeBase64(msg.indices);
+  const idx = new Uint32Array(idxBytes.buffer.slice(0));
+  const rgb = decodeBase64(msg.colors);
+  const col = new Float32Array(msg.vertices * 4);
+  for (let i = 0; i < msg.vertices; i++) {
+    col[i * 4] = (rgb[i * 3] ?? 0) / 255;
+    col[i * 4 + 1] = (rgb[i * 3 + 1] ?? 0) / 255;
+    col[i * 4 + 2] = (rgb[i * 3 + 2] ?? 0) / 255;
+    col[i * 4 + 3] = 1;
+  }
+  const normals = new Float32Array(pos.length);
+  // Indices are shared with the normal computation, so the triangle winding
+  // stays as the server produced it.
+  VertexData.ComputeNormals(Array.from(pos), Array.from(idx), normals);
+  lastSurface = { pos, idx, col, normals };
+  const vd = new VertexData();
+  vd.positions = pos;
+  vd.indices = idx;
+  vd.normals = normals;
+  vd.colors = col;
+  const m = new Mesh("surface", scene);
+  vd.applyToMesh(m);
+  m.material = (() => {
+    const mat = new StandardMaterial("surfaceMat", scene);
+    mat.backFaceCulling = false;
+    mat.specularColor = new Color3(0.05, 0.05, 0.05);
+    return mat;
+  })();
+  m.hasVertexAlpha = false;
+  m.isVisible = layers.surface;
+  surfaceMesh = m;
+  log(`surface: ${msg.vertices} verts, ${msg.faces} tris`);
+  rebuildObjectViews();
+}
+
+/** The last cloud's arrays, kept for PLY export. */
+let lastCloudArrays: { positions: Float32Array; colors: Float32Array } | null = null;
+
 function renderCloud(msg: ReconCloudMsg) {
   lastCloudMsg = msg;
   if (!msg.count) {
@@ -421,6 +834,8 @@ function renderCloud(msg: ReconCloudMsg) {
     cloudMesh = buildPointCloud(positions, colors);
   }
   cloudPoints = msg.count;
+  lastCloudArrays = { positions: new Float32Array(positions), colors: new Float32Array(colors) };
+  if (cloudMesh) cloudMesh.isVisible = layers.cloud;
   cloudVoxels = msg.voxels;
   cloudScale =
     `${msg.method ?? "?"}${msg.note ? ` (${msg.note})` : ""} · ` +
@@ -525,6 +940,8 @@ const gateway = new GatewayClient("viewer", sessionId, {
     replayClouds += 1;
     renderCloud(msg);
   },
+  onReconMesh: (msg) => renderMesh(msg),
+  onReconObjects: (msg) => renderObjects(msg),
   onReconReplay: (msg) => {
     replayProgress.hidden = false;
     replayBar.max = Math.max(1, msg.total);
@@ -621,7 +1038,7 @@ setInterval(() => {
         reconNote ? `\u26a0 ${reconNote}` : "",
         `tracking \u00b7 ${poseCount} poses`,
         `pos ${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}`,
-        `${planeMeshes.size} plane(s)${planesVisible ? "" : " (hidden, P)"}`,
+        `${planeMeshes.size} plane(s)${layers.planes ? "" : " (hidden, P)"}`,
         `${reconKeyframes} keyframe(s) \u00b7 ${reconFused} fused \u00b7 ${reconSkipped} skipped`,
         `${cloudVoxels} voxels -> ${cloudPoints} pts`,
         cloudScale,
@@ -632,7 +1049,7 @@ setInterval(() => {
             `total ${(reconTiming.total ?? 0).toFixed(0)}ms`
           : "",
         `${anchorMeshes.size} anchor(s)`,
-        `wheel / +/- zoom \u00b7 arrows orbit \u00b7 P planes \u00b7 B background ` +
+        `wheel / +/- zoom \u00b7 arrows orbit \u00b7 C cloud \u00b7 M surface \u00b7 P planes \u00b7 B background ` +
           `\u00b7 V ${solidCloud ? "solid->points" : "points->solid"} \u00b7 A algorithms`,
       ]
         .filter(Boolean)
@@ -709,10 +1126,15 @@ function updateAlgoSummary() {
     algoSummary.textContent = "";
     return;
   }
-  const p = collectParams();
-  const scale =
-    p.scaleMode === "fixed" ? `a=${Number(p.scaleA).toFixed(2)}` : String(p.scaleMode);
-  algoSummary.textContent = `${m.id} \u00b7 ${scale}`;
+  algoSummary.textContent = m.id;
+  // Live keyframes from the phone use the same method + params as the viewer.
+  void fetch("/api/recon/active", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ method: m.id, params: collectParams() }),
+  }).catch(() => {
+    /* gateway down: the next change will retry */
+  });
 }
 
 /**

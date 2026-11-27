@@ -29,6 +29,8 @@ export interface GatewayHandlers {
   ) => void;
   onReconStatus?: (msg: Extract<ServerToClient, { type: "recon_status" }>) => void;
   onReconCloud?: (msg: Extract<ServerToClient, { type: "recon_cloud" }>) => void;
+  onReconMesh?: (msg: Extract<ServerToClient, { type: "recon_mesh" }>) => void;
+  onReconObjects?: (msg: Extract<ServerToClient, { type: "recon_objects" }>) => void;
   onReconReplay?: (msg: Extract<ServerToClient, { type: "recon_replay" }>) => void;
   onReconClear?: (msg: Extract<ServerToClient, { type: "recon_clear" }>) => void;
   onStatus?: (status: GatewayStatus, detail?: string) => void;
@@ -82,6 +84,8 @@ export class GatewayClient {
       else if (msg.type === "recon_status") this.handlers.onReconStatus?.(msg);
       else if (msg.type === "recon_clear") this.handlers.onReconClear?.(msg);
       else if (msg.type === "recon_cloud") this.handlers.onReconCloud?.(msg);
+      else if (msg.type === "recon_mesh") this.handlers.onReconMesh?.(msg);
+      else if (msg.type === "recon_objects") this.handlers.onReconObjects?.(msg);
       else if (msg.type === "recon_replay") this.handlers.onReconReplay?.(msg);
     };
   }

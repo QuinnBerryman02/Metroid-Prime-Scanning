@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 
 from .fusion import VoxelMap, voxel_keys
+from .tsdf import TSDFVolume
 
 # --------------------------------------------------------------------------
 # Registry
@@ -82,55 +83,6 @@ def common_params() -> tuple[Param, ...]:
     """The knobs that decide whether the cloud is the right *shape and size*."""
     return (
         Param(
-            "scaleMode",
-            "Metric scale from",
-            "enum",
-            "fixed",
-            choices=("fixed", "auto", "planes", "hit", "none"),
-            help="fixed = use a/b below (the default: on the test device both "
-            "ARCore references measure ~5x too large); auto = plane fit "
-            "cross-checked against the hit-test; planes/hit = that reference "
-            "alone; none = raw model units (a=1)",
-        ),
-        Param(
-            "scaleA",
-            "Scale a  (Z = a·d + b)",
-            "float",
-            0.7,
-            0.01,
-            # Fitted by the y-origin test: the fused room must have its floor on
-            # ARCore's local-floor plane (y=0). Not universal - Depth Anything
-            # V2's scale drifts per image - but it is right for this room, and
-            # it is what makes the baseline reconstruction correct rather than
-            # 5x too big. Dial it in the viewer.
-            30.0,
-            0.01,
-            help="used when scaleMode=fixed; 0.7 puts the floor on y=0 here",
-        ),
-        Param(
-            "scaleB",
-            "Offset b",
-            "float",
-            0.0,
-            -5.0,
-            5.0,
-            0.01,
-            help="0 = pure scale; nonzero shears near/far (usually a bad model)",
-        ),
-        Param(
-            "fovDeg",
-            "FOV override",
-            "float",
-            0.0,
-            0.0,
-            130.0,
-            0.5,
-            help="0 = use the FOV the phone reported; set it to test the "
-            "intrinsics hypothesis, e.g. 50 or 65",
-        ),
-        Param("stride", "Pixel stride", "int", 2, 1, 6, 1,
-              help="sample every Nth pixel - higher is faster and sparser"),
-        Param(
             "depthFilter",
             "Depth filter",
             "enum",
@@ -178,7 +130,14 @@ REGISTRY: tuple[Method, ...] = (
             Param("voxel", "Voxel size (m)", "float", 0.04, 0.01, 0.2, 0.005),
             Param("trunc", "Truncation (m)", "float", 0.12, 0.02, 0.6, 0.01,
                   help="~2-3x the voxel size; smaller = tighter but thinner"),
-            Param("minWeight", "Min observations", "float", 1.0, 1.0, 10.0, 1.0),
+            Param("minWeight", "Min observations", "float", 1.0, 1.0, 10.0, 1.0,
+                  help="a node needs this many depth observations before it counts"),
+            Param("maxWeight", "Max weight (fusion memory)", "float", 40.0, 2.0, 500.0, 1.0,
+                  help="caps the running average: low = adapts to new frames, high = stable"),
+            Param("boxHalf", "Box half-size x/z (m)", "float", 4.0, 1.0, 10.0, 0.5,
+                  help="the TSDF covers +/- this in x and z around the session origin"),
+            Param("boxHalfY", "Box half-height y (m)", "float", 2.0, 0.5, 4.0, 0.25,
+                  help="covers the floor and ceiling; the floor is ~1.1 m below the origin"),
         ),
     ),
     Method(
@@ -263,8 +222,18 @@ def build(method_id: str, params: dict[str, Any]) -> "BaseRecon":
 class BaseRecon:
     """Interface every method implements. `cloud()` is the read-out."""
 
+    # Only methods that build a surface set this; the viewer draws it if present.
+    has_mesh = False
+
     def __init__(self, params: dict[str, Any]) -> None:
         self.p = params
+
+    def integrate_depth(self, depth, rgb, world_from_cam, intr) -> int:
+        """Full-resolution depth hook. Default: methods ignore it."""
+        return 0
+
+    def mesh(self):
+        return None
 
     def add(
         self,
@@ -451,95 +420,71 @@ class PointsRecon(BaseRecon):
 
 
 class TsdfRecon(BaseRecon):
-    """Truncated signed distance field, read out at the zero crossing.
+    """Dense TSDF (app/tsdf.py): the only method that produces a surface.
 
-    For every observed surface point p seen from camera c we update the voxels
-    in a (2k+1)^3 block around it with
-
-        sdf = clamp( (p - v) . r_hat / trunc, -1, +1 )     r_hat = unit(c -> p)
-
-    i.e. the signed distance to the surface *along the viewing ray*. Positive
-    means the voxel sits in front of the surface (empty space), which matches
-    the usual TSDF sign convention. Averaging over keyframes is what makes this
-    robust: a stray depth reading is outvoted rather than baked in.
-
-    Reading out uses the sign change between neighbouring voxels to find the
-    surface, which is the zero crossing without needing a mesh (§FUSION.md).
+    Each keyframe integrates the full-resolution metric depth into a truncated
+    signed distance field; the surface is the zero crossing, extracted with
+    marching cubes. The point cloud is the mesh vertices, so the viewer's cloud
+    and surface always agree.
     """
+
+    has_mesh = True
 
     def __init__(self, params: dict[str, Any]) -> None:
         super().__init__(params)
+        from . import config
+
         self.voxel = float(params.get("voxel", 0.04))
-        self.trunc = max(float(params.get("trunc", 0.12)), self.voxel * 0.5)
+        self.trunc = max(float(params.get("trunc", 0.12)), self.voxel * 1.5)
         self.min_weight = float(params.get("minWeight", 1.0))
-        self.acc = HashAccum(nvals=4)  # rgb + sdf
-        self.updates = 0
-
-    def add(self, points, colors, cam_pos, planes) -> int:
-        n = int(points.shape[0])
-        if n == 0:
-            return 0
-        v = self.voxel
-        k = max(1, int(round(self.trunc / v)))
-        offsets = np.array(
-            list(itertools.product(range(-k, k + 1), repeat=3)), dtype=np.float64
+        self.min_depth = float(params.get("minDepth", 0.2))
+        self.max_depth = float(params.get("maxDepth", 12.0))
+        half = float(params.get("boxHalf", 4.0))
+        half_y = float(params.get("boxHalfY", 2.0))
+        # Memory guard: a 10 m box at 4 cm would be ~50M nodes (~1 GB). Grow the
+        # voxel rather than the allocation; the note says when that happened.
+        cap = 8_000_000
+        voxel = self.voxel
+        while (2 * half / voxel + 1) * (2 * half_y / voxel + 1) * (2 * half / voxel + 1) > cap:
+            voxel *= 1.1
+        self.box_voxel = voxel
+        self.vol = TSDFVolume(
+            (-half, -half_y, -half),
+            (half, half_y, half),
+            voxel=voxel,
+            trunc=max(self.trunc, voxel * 1.5),
+            max_weight=float(params.get("maxWeight", 40.0)),
         )
+        self._mesh_cache: tuple[int, tuple] | None = None
 
-        ray = points - cam_pos[None, :]
-        ray /= np.linalg.norm(ray, axis=1, keepdims=True) + 1e-9
-        base = np.floor(points / v)
-
-        # Chunk so the (points x offsets) block stays bounded.
-        step = max(1, int(200_000 / max(offsets.shape[0], 1)))
-        for s in range(0, n, step):
-            e = min(n, s + step)
-            centres = ((base[s:e, None, :] + offsets[None, :, :]) + 0.5) * v
-            d = points[s:e, None, :] - centres
-            sdf = np.sum(d * ray[s:e, None, :], axis=2) / self.trunc
-            np.clip(sdf, -1.0, 1.0, out=sdf)
-
-            keys = voxel_keys(centres.reshape(-1, 3), v)
-            sdf_flat = sdf.reshape(-1)
-            col = np.repeat(colors[s:e], offsets.shape[0], axis=0)
-            vals = np.concatenate([col, sdf_flat[:, None]], axis=1)
-            self.acc.add(keys, vals)
-        self.updates += 1
-        return n
+    def integrate_depth(self, depth, rgb, world_from_cam, intr) -> int:
+        self._mesh_cache = None
+        # Same depth range the point methods use, so the methods are comparable.
+        d = np.where((depth >= self.min_depth) & (depth <= self.max_depth), depth, np.nan)
+        return self.vol.integrate(d, rgb, world_from_cam, intr)
 
     @property
     def size(self) -> int:
-        return self.acc.size
+        return self.vol.observed_nodes
 
     def note(self) -> str:
-        return f"trunc {self.trunc:.2f} m"
+        grown = "" if self.box_voxel == self.voxel else f" (grown to {self.box_voxel:.3f} m to fit)"
+        return f"TSDF {self.box_voxel:.3f} m{grown}, trunc {self.trunc:.2f} m"
+
+    def mesh(self):
+        """(vertices, faces, colors), cached until the next keyframe."""
+        if self._mesh_cache is None or self._mesh_cache[0] != self.vol.frames:
+            self._mesh_cache = (self.vol.frames, self.vol.extract(self.min_weight))
+        return self._mesh_cache[1]
 
     def cloud(self, max_points: int = 30_000):
-        acc = self.acc
-        if acc.keys.size == 0:
-            return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.uint8), 0.0
-
-        mu = acc.sum / np.maximum(acc.w, 1e-9)[:, None]
-        sdf = mu[:, 3]
-        centres = acc.centres(self.voxel)
-        pos_sign = sdf > 0
-
-        # Surface = a voxel whose sign disagrees with a neighbour along any axis.
-        surface = np.zeros(acc.keys.size, dtype=bool)
-        for axis, shift in enumerate((1 << 42, 1 << 21, 1)):
-            nk = acc.keys + shift
-            at = np.clip(np.searchsorted(acc.keys, nk), 0, acc.keys.size - 1)
-            found = acc.keys[at] == nk
-            surface |= found & (pos_sign[at] != pos_sign)
-
-        keep = surface & (acc.w >= self.min_weight) & (np.abs(sdf) <= 1.0)
-        if not keep.any():
+        v, _f, c = self.mesh()
+        if v.shape[0] == 0:
             return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.uint8), self.voxel
-
-        p, c = centres[keep], np.clip(mu[keep, :3], 0, 255)
-        if p.shape[0] > max_points:
-            idx = np.linspace(0, p.shape[0] - 1, max_points).astype(np.int64)
-            p, c = p[idx], c[idx]
-        return p.astype(np.float32), c.astype(np.uint8), self.voxel
+        if v.shape[0] > max_points:
+            idx = np.linspace(0, v.shape[0] - 1, max_points).astype(np.int64)
+            v, c = v[idx], c[idx]
+        return v, c, self.voxel
 
 
 class DbscanRecon(BaseRecon):

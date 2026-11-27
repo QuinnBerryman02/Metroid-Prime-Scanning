@@ -46,6 +46,7 @@ from .lifting import (
     unproject_mask,
 )
 from .methods import METHODS, METHOD_SPECS, Segmenter, describe, device_for
+from . import objects as objects_mod
 from .fusion import (
     AFFINE_MIN_SPREAD,
     ScaleFit,
@@ -58,6 +59,7 @@ from .fusion import (
 from .schemas import (
     Aimed,
     DepthResult,
+    ReconMesh,
     Detection,
     Obb,
     ReconCloud,
@@ -347,6 +349,45 @@ def _skip(
     )
 
 
+# Point methods sample every Nth pixel. Fixed, not a knob: it only trades
+# speed for sparsity, and the TSDF path ignores it.
+POINT_STRIDE = 2
+
+
+def _observe_objects(
+    req: ReconFrameRequest,
+    img: np.ndarray,
+    rel: np.ndarray,
+    world_from_cam: np.ndarray,
+    intr: tuple[float, float, float, float],
+    timing: dict[str, float],
+) -> list[dict[str, Any]]:
+    """YOLO masks -> per-object candidates for this session (step 2).
+
+    Failure here must never stop the fusion, so it logs and returns nothing.
+    """
+    seg = get_segmenter("yolo")
+    if seg is None:
+        return []
+    try:
+        t0 = time.perf_counter()
+        items = seg.run(img)
+        obs = objects_mod.observations(req.frameId, items, rel, world_from_cam, intr, img)
+        trackers = _recon_state().setdefault("objects", {})
+        tracker = trackers.setdefault(req.sessionId, objects_mod.ObjectTracker())
+        for o in obs:
+            tracker.observe(o)
+        t1 = time.perf_counter()
+        for obj in tracker.objects:
+            obj.update_carve()
+        timing["carve"] = round((time.perf_counter() - t1) * 1000, 2)
+        timing["objects"] = round((time.perf_counter() - t0) * 1000, 2)
+        return [o.summary() for o in tracker.objects]
+    except Exception as e:  # noqa: BLE001
+        log.warning("object tracking failed: %s", e)
+        return []
+
+
 def _fuse_keyframe(
     req: ReconFrameRequest, rs: dict[str, Any], entry: dict[str, Any]
 ) -> ReconFrameResponse:
@@ -389,9 +430,12 @@ def _fuse_keyframe(
 
     timing: dict[str, float] = {}
 
-    # 1. relative depth (inverse of the model's disparity), metric scale unknown
+    # 1. depth. The metric checkpoint returns metres directly; no scale fit.
     t = time.perf_counter()
-    rel = depth.predict_depth(pil)
+    # The phone's reported FOV: the intrinsics are not a tuning knob.
+    fov = req.fovDeg or config.FOV_DEG
+    intr = intrinsics_from_fov(width, height, fov)
+    rel = depth.predict_metres(pil, focal_px=intr[0])
     if params["depthFilter"] == "median":
         rel = cv2.medianBlur(rel, 5)
     elif params["depthFilter"] == "bilateral":
@@ -403,10 +447,6 @@ def _fuse_keyframe(
     timing["depth"] = round((time.perf_counter() - t) * 1000, 2)
 
     world_from_cam = pose_to_matrix(req.pose)
-    # fovDeg=0 means "whatever the phone reported"; a real value overrides it,
-    # which is how the intrinsics hypothesis gets tested against real frames.
-    fov = params["fovDeg"] or req.fovDeg or config.FOV_DEG
-    intr = intrinsics_from_fov(width, height, fov)
 
     # 2. MS3.1 - metric scale, from ARCore's planes. The tracker smooths the
     # per-frame estimate: fusing with a scale that jumps frame to frame smears
@@ -424,6 +464,7 @@ def _fuse_keyframe(
     if req.hitDistance and req.hitDistance > 0:
         rel_centre = float(rel[height // 2, width // 2])
         if rel_centre > 1e-6:
+            # Diagnostic only: with metric depth this should be ~1.0.
             hit_scale = req.hitDistance / rel_centre
 
     # A plane fit is only a fit if its residual is small. On real data the bad
@@ -457,34 +498,11 @@ def _fuse_keyframe(
             fresh = ScaleFit(hit_scale, 0.0, 0, 0.0, "hit")
             source = "hit-test"
 
-    # The method may pin the scale source. "fixed"/"none" bypass the tracker:
-    # they are exact by construction, so smoothing them would be wrong.
-    scale_mode = params["scaleMode"]
-    exact = False
-    if scale_mode == "hit":
-        if hit_scale is None:
-            return _skip(rs, entry, f"scaleMode=hit, no hit-test ({why})", hit_scale)
-        # scaleB applies here too. It used to be hardcoded to 0, which removed
-        # the only lever for correcting a scale that is right about the near
-        # surface and wrong further out - the exact thing `hit` gets wrong.
-        fresh = ScaleFit(hit_scale, params["scaleB"], 0, 0.0, "hit")
-        source = "hit-test"
-        # Deliberately per-frame, bypassing ScaleTracker. The frame-to-frame
-        # variation in hit/rel is not noise to be smoothed away - it *is* the
-        # depth model's per-frame scale drift, and a running median removes
-        # precisely the signal this mode exists to follow. A constant `a` can
-        # only ever be a compromise between frames; this is the mode that
-        # tracks them.
-        exact = True
-    elif scale_mode == "fixed":
-        fresh = ScaleFit(params["scaleA"], params["scaleB"], 0, 0.0, "fixed")
-        source, exact = "fixed", True
-    elif scale_mode == "none":
-        fresh = ScaleFit(1.0, 0.0, 0, 0.0, "none")
-        source, exact = "none", True
-    # "auto" and "planes" fall through with whatever the fit cross-check left.
+    # Depth is metric, so the fused depth is used as-is: no fit, no tracker.
+    fresh = ScaleFit(1.0, 0.0, 0, 0.0, "metric")
+    source, exact = "metric", True
 
-    fit = fresh if exact else entry["tracker"].update(fresh)
+    fit = fresh
     timing["scale"] = round((time.perf_counter() - t) * 1000, 2)
     if fit is None:
         return _skip(rs, entry, why, hit_scale)
@@ -499,10 +517,13 @@ def _fuse_keyframe(
         world_from_cam,
         intr,
         fit,
-        stride=params["stride"],
+        stride=POINT_STRIDE,
         min_depth=params["minDepth"],
         max_depth=params["maxDepth"],
     )
+    # Full-resolution depth for methods that build a surface (TSDF); the
+    # strided points below are what the point methods read.
+    method.integrate_depth(rel, img, world_from_cam, intr)
     if points.shape[0]:
         method.add(
             points,
@@ -531,6 +552,7 @@ def _fuse_keyframe(
     )
 
     cloud = None
+    mesh = None
     if (
         req.forceSnapshot
         or entry["fused"] % config.RECON_CLOUD_EVERY == 0
@@ -538,6 +560,20 @@ def _fuse_keyframe(
     ):
         pos, col, used = method.cloud(config.RECON_CLOUD_MAX)
         p_b64, c_b64 = encode_points(pos, col)
+        if method.has_mesh:
+            tm = time.perf_counter()
+            mv, mf, mc = method.mesh()
+            timing["mesh"] = round((time.perf_counter() - tm) * 1000, 2)
+            if mv.shape[0]:
+                mesh = ReconMesh(
+                    vertices=int(mv.shape[0]),
+                    faces=int(mf.shape[0]),
+                    positions=base64.b64encode(np.ascontiguousarray(mv, dtype="<f4").tobytes()).decode(),
+                    colors=base64.b64encode(np.ascontiguousarray(mc, dtype=np.uint8).tobytes()).decode(),
+                    indices=base64.b64encode(np.ascontiguousarray(mf, dtype="<u4").tobytes()).decode(),
+                    voxel=method.voxel,
+                    observedNodes=method.size,
+                )
         cloud = ReconCloud(
             count=int(pos.shape[0]),
             positions=p_b64,
@@ -552,12 +588,16 @@ def _fuse_keyframe(
             scaleSamples=fit.samples,
         )
 
+    objects = _observe_objects(req, img, rel, world_from_cam, intr, timing)
+
     return ReconFrameResponse(
         keyframes=rs["keyframes"],
+        objects=objects,
         fused=entry["fused"],
         skipped=entry["skipped"],
         voxels=method.size,
         cloud=cloud,
+        mesh=mesh,
         timing=timing,
         method=entry["method_id"],
         note=method.note(),
@@ -587,6 +627,18 @@ def recon_frame(req: ReconFrameRequest) -> ReconFrameResponse:
         return _fuse_keyframe(req, rs, entry)
     finally:
         _recon_lock.release()
+
+
+@app.get("/recon/objects")
+def recon_objects(session: str = "") -> dict[str, Any]:
+    """A session's objects, each with its per-view evidence (JPEG + mask outline).
+
+    Heavy, so it's fetched on demand by the viewer, not streamed.
+    """
+    tracker = _recon_state().get("objects", {}).get(session)
+    if tracker is None:
+        return {"objects": []}
+    return {"objects": [dict(o.summary(), views=o.views_payload()) for o in tracker.objects]}
 
 
 @app.get("/recon/methods")

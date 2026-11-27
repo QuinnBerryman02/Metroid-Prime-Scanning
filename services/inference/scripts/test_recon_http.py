@@ -19,7 +19,7 @@ from app import config  # noqa: E402
 from app.depth import DepthEstimator  # noqa: E402
 
 URL = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000"
-A_TRUE = 1.0  # we pretend rel_depth = Z / A_TRUE
+A_TRUE = 1.0  # we pretend 1/Z = A_TRUE * disp
 
 pil = Image.open("samples/bus.jpg").convert("RGB")
 w, h = pil.size
@@ -29,7 +29,7 @@ fx, fy, cx, cy = f, f, w / 2.0, h / 2.0
 est = DepthEstimator(
     config.DEPTH_MODEL, config.DEPTH_DEVICE, config.DEPTH_IR, config.EXPORT_OPENVINO
 )
-Z = A_TRUE * cv2.medianBlur(est.predict_depth(pil), 5)
+Z = 1.0 / (A_TRUE * cv2.medianBlur(est.predict(pil), 5))
 
 
 def quad(u0, u1, v0, v1):

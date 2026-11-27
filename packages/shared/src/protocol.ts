@@ -330,6 +330,49 @@ export interface ReconCloudMsg {
   at: number;
 }
 
+/** Server -> viewer: a TSDF surface snapshot as a triangle mesh. */
+/** One scannable object (step 2: candidate, seen from 2+ views). */
+export interface ReconObjectInfo {
+  id: number;
+  label: string;
+  score: number;
+  views: number;
+  /** room points the carve kept inside this object (0 = carve too thin, using centroids). */
+  carved: number;
+  /** where the object is (carved median, else the centroid estimate), metres. */
+  anchor: [number, number, number];
+  /** world centre (metres, ARCore frame). */
+  centre: [number, number, number];
+  /** half-size of the box around the centre (metres). */
+  halfExtent: [number, number, number];
+  /** tentative = two views; candidate = three or more. */
+  status: "tentative" | "candidate";
+}
+
+/** The session's current scannable objects. Sent whole, so a late viewer is in step. */
+export interface ReconObjectsMsg {
+  type: "recon_objects";
+  sessionId: string;
+  objects: ReconObjectInfo[];
+  at: number;
+}
+
+export interface ReconMeshMsg {
+  type: "recon_mesh";
+  sessionId: string;
+  vertices: number;
+  faces: number;
+  /** base64 little-endian float32, xyz triples (metres, ARCore frame). */
+  positions: string;
+  /** base64 uint8, rgb triples, one per vertex. */
+  colors: string;
+  /** base64 little-endian uint32, triangle index triples. */
+  indices: string;
+  voxel: number;
+  observedNodes: number;
+  at: number;
+}
+
 /** Server -> any: reconstruction progress for a session. */
 export interface ReconStatusMsg {
   type: "recon_status";
@@ -428,6 +471,8 @@ export type ServerToClient =
   | ReconStatusMsg
   | ReconClearMsg
   | ReconCloudMsg
+  | ReconMeshMsg
+  | ReconObjectsMsg
   | ReconReplayMsg
   | SessionEventMsg
   | ErrorMsg;

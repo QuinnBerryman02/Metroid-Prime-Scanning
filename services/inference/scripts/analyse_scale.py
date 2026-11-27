@@ -51,7 +51,7 @@ def main() -> int:
             continue
         pil = Image.open(io.BytesIO(f.with_suffix(".jpg").read_bytes())).convert("RGB")
         w, h = pil.size
-        rel = model.predict_depth(pil)
+        rel = model.predict(pil)  # disparity; Z = 1/(a*disp)
         c = float(rel[h // 2, w // 2])
         # Also sample a small patch: a single pixel is noisy.
         patch = float(np.median(rel[h // 2 - 4 : h // 2 + 5, w // 2 - 4 : w // 2 + 5]))
@@ -65,7 +65,7 @@ def main() -> int:
     print(f"{'frame':<22} {'hit m':>7} {'rel ctr':>9} {'rel patch':>10} {'a=hit/rel':>10}")
     ratios = []
     for name, hit, c, patch in rows:
-        a = hit / patch if patch > 1e-6 else float("nan")
+        a = 1.0 / (hit * patch) if patch > 1e-6 else float("nan")  # 1/Z = a*disp
         ratios.append(a)
         print(f"{name:<22} {hit:7.3f} {c:9.4f} {patch:10.4f} {a:10.3f}")
 
